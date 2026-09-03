@@ -1,0 +1,27 @@
+<header class="topbar">
+  <a class="brand" href="/dashboard"><span class="star">★</span><span>Liberty County Sheriff's Office</span></a>
+  <% if (user) { %>
+    <div class="userbar">
+      <span><%= user.globalName || user.username %></span>
+      <form action="/auth/logout" method="post">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button class="ghost" type="submit">Sign out</button>
+      </form>
+    </div>
+  <% } %>
+</header>
+<% if (user) { %>
+<div class="shell">
+  <aside class="sidebar">
+    <a href="/dashboard" class="<%= path === '/dashboard' || path === '/' ? 'active' : '' %>">Overview</a>
+    <a href="/dashboard/deputies" class="<%= path.includes('/deputies') ? 'active' : '' %>">Deputies</a>
+    <a href="/dashboard/infractions" class="<%= path.includes('/infractions') ? 'active' : '' %>">Infractions</a>
+    <a href="/dashboard/promotions" class="<%= path.includes('/promotions') ? 'active' : '' %>">Promotions</a>
+    <a href="/dashboard/loas" class="<%= path.includes('/loas') ? 'active' : '' %>">LOAs</a>
+    <a href="/dashboard/activity" class="<%= path.includes('/activity') ? 'active' : '' %>">Activity</a>
+    <a href="/dashboard/settings" class="<%= path.includes('/settings') ? 'active' : '' %>">Settings</a>
+  </aside>
+  <main class="content">
+<% } else { %>
+<main class="public-content">
+<% } %>
