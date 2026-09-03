@@ -1,0 +1,11 @@
+<%- include('partials/head', { title }) %>
+<%- include('partials/nav') %>
+<section class="hero">
+  <div class="badge-mark">★</div>
+  <p class="eyebrow">LIBERTY COUNTY SHERIFF'S OFFICE</p>
+  <h1>Department Operations Portal</h1>
+  <p class="lead">Secure staff management, activity tracking, training, discipline, LOAs, promotions, tickets, and internal affairs for the LCSO roleplay community.</p>
+  <% if (query.login === 'failed') { %><div class="alert danger">Discord login failed. Please try again.</div><% } %>
+  <% if (user) { %><a class="button" href="/dashboard">Open Dashboard</a><% } else { %><a class="button" href="/auth/discord">Sign in with Discord</a><% } %>
+</section>
+<%- include('partials/footer') %>
