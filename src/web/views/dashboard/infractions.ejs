@@ -1,0 +1,24 @@
+<%- include('../partials/head', { title }) %>
+<%- include('../partials/nav') %>
+<div class="page-head"><div><p class="eyebrow">PROFESSIONAL STANDARDS</p><h1>Infractions</h1></div></div>
+<% if (query.ok) { %><div class="alert success">Disciplinary record updated.</div><% } %>
+<div class="panel">
+  <h2>Issue Infraction</h2>
+  <form class="form-grid" method="post" action="/dashboard/infractions/add">
+    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+    <label>Deputy<select name="deputyId"><% deputies.forEach(d => { %><option value="<%= d._id %>"><%= d.displayName %> — <%= d.rank %></option><% }) %></select></label>
+    <label>Type<select name="type"><% types.forEach(t => { %><option value="<%= t %>"><%= t %></option><% }) %></select></label>
+    <label>Points<input type="number" name="points" min="0" max="100" value="1"></label>
+    <label class="wide">Reason<textarea name="reason" required maxlength="1000"></textarea></label>
+    <button class="button" type="submit">Issue Infraction</button>
+  </form>
+</div>
+<div class="panel table-wrap">
+<table><thead><tr><th>Date</th><th>Deputy</th><th>Type</th><th>Points</th><th>Reason</th><th>Status</th><th></th></tr></thead><tbody>
+<% infractions.forEach(i => { %><tr>
+  <td><%= i.createdAt.toISOString().slice(0,10) %></td><td><%= i.discordId %></td><td><%= i.type %></td><td><%= i.points %></td><td><%= i.reason %></td><td><span class="pill"><%= i.active ? 'Active' : 'Removed' %></span></td>
+  <td><% if (i.active) { %><form method="post" action="/dashboard/infractions/<%= i._id %>/remove"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><input type="hidden" name="reason" value="Removed from dashboard"><button class="small danger">Remove</button></form><% } %></td>
+</tr><% }) %>
+</tbody></table>
+</div>
+<%- include('../partials/footer') %>

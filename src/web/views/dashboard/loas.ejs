@@ -1,0 +1,22 @@
+<%- include('../partials/head', { title }) %>
+<%- include('../partials/nav') %>
+<div class="page-head"><div><p class="eyebrow">PERSONNEL</p><h1>Leave of Absence</h1></div></div>
+<% if (query.ok) { %><div class="alert success">LOA request reviewed.</div><% } %>
+<div class="cards">
+<% loas.forEach(l => { %>
+  <article class="panel">
+    <div class="row-between"><h2><%= l.discordId %></h2><span class="pill"><%= l.status %></span></div>
+    <p><strong><%= l.startDate.toISOString().slice(0,10) %></strong> → <strong><%= l.endDate.toISOString().slice(0,10) %></strong></p>
+    <p><%= l.reason %></p>
+    <% if (l.status === 'Pending') { %>
+      <form class="review-form" method="post" action="/dashboard/loas/<%= l._id %>/review">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <input name="reason" maxlength="1000" placeholder="Review note">
+        <button class="small" name="decision" value="approve">Approve</button>
+        <button class="small danger" name="decision" value="deny">Deny</button>
+      </form>
+    <% } %>
+  </article>
+<% }) %>
+</div>
+<%- include('../partials/footer') %>

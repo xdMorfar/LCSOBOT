@@ -1,0 +1,24 @@
+<%- include('../partials/head', { title }) %>
+<%- include('../partials/nav') %>
+<div class="page-head"><div><p class="eyebrow">ADMINISTRATION</p><h1>Bot Settings</h1></div></div>
+<% if (query.ok) { %><div class="alert success">Configuration saved.</div><% } %>
+<form method="post" action="/dashboard/settings">
+<input type="hidden" name="_csrf" value="<%= csrfToken %>">
+<div class="panel"><h2>Department Roles & Channels</h2><div class="form-grid">
+  <label>LOA Role ID<input name="loaRoleId" value="<%= settings.loaRoleId || '' %>"></label>
+  <label>Staff Role ID<input name="staffRoleId" value="<%= settings.staffRoleId || '' %>"></label>
+  <label>Internal Affairs Role ID<input name="internalAffairsRoleId" value="<%= settings.internalAffairsRoleId || '' %>"></label>
+  <label>Application Category ID<input name="applicationCategoryId" value="<%= settings.applicationCategoryId || '' %>"></label>
+  <label>Ticket Category ID<input name="ticketCategoryId" value="<%= settings.ticketCategoryId || '' %>"></label>
+  <label>Internal Affairs Category ID<input name="internalAffairsCategoryId" value="<%= settings.internalAffairsCategoryId || '' %>"></label>
+  <label>Guideline Channel ID<input name="guidelineChannelId" value="<%= settings.guidelineChannelId || '' %>"></label>
+</div></div>
+<div class="panel"><h2>Dedicated Log Channels</h2><div class="form-grid">
+<% logTypes.forEach(type => { %><label><%= type %><input name="log_<%= type %>" value="<%= settings.logChannels.get(type) || '' %>" placeholder="Channel ID"></label><% }) %>
+</div></div>
+<div class="panel"><h2>Rank Role Mapping</h2><div class="form-grid">
+<% ranks.forEach(rank => { %><label><%= rank %><input name="rank_<%= rank %>" value="<%= settings.rankRoles.get(rank) || '' %>" placeholder="Role ID"></label><% }) %>
+</div></div>
+<button class="button" type="submit">Save Configuration</button>
+</form>
+<%- include('../partials/footer') %>

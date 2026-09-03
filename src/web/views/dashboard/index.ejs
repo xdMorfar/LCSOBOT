@@ -1,0 +1,16 @@
+<%- include('../partials/head', { title }) %>
+<%- include('../partials/nav') %>
+<div class="page-head"><div><p class="eyebrow">COMMAND STAFF</p><h1>Department Overview</h1></div></div>
+<div class="stats-grid">
+  <div class="stat"><span>Deputies</span><strong><%= stats.deputies %></strong></div>
+  <div class="stat"><span>Pending LOAs</span><strong><%= stats.pendingLoas %></strong></div>
+  <div class="stat"><span>Promotion Requests</span><strong><%= stats.pendingPromotions %></strong></div>
+  <div class="stat"><span>Open Tickets</span><strong><%= stats.openTickets %></strong></div>
+  <div class="stat"><span>Applications</span><strong><%= stats.pendingApplications %></strong></div>
+  <div class="stat"><span>Activity This Month</span><strong><%= stats.activityHours %>h</strong></div>
+</div>
+<div class="panel">
+  <h2>Operations</h2>
+  <p>Use the navigation to manage personnel records, disciplinary history, promotion requests, leave, and activity. Sensitive actions are checked against your LCSO rank and Discord permissions.</p>
+</div>
+<%- include('../partials/footer') %>

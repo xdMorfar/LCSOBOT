@@ -1,0 +1,25 @@
+<%- include('../partials/head', { title }) %>
+<%- include('../partials/nav') %>
+<div class="page-head"><div><p class="eyebrow">COMMAND STAFF</p><h1>Promotions</h1></div></div>
+<% if (query.ok) { %><div class="alert success">Promotion request reviewed.</div><% } %>
+<% if (query.error) { %><div class="alert danger">Promotion request could not be processed.</div><% } %>
+<div class="cards">
+<% promotions.forEach(p => { %>
+  <article class="panel">
+    <div class="row-between"><h2><%= p.type %></h2><span class="pill"><%= p.status %></span></div>
+    <p><strong><%= p.discordId %></strong> • <%= p.fromRank %> → <%= p.toRank %></p>
+    <p><%= p.reason %></p>
+    <small><%= p.createdAt.toISOString() %></small>
+    <% if (p.type === 'Request' && p.status === 'Pending') { %>
+      <form class="review-form" method="post" action="/dashboard/promotions/<%= p._id %>/review">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <input name="reason" required maxlength="1000" placeholder="Review reason">
+        <label class="check"><input type="checkbox" name="override"> override requirements</label>
+        <button class="small" name="decision" value="approve">Approve</button>
+        <button class="small danger" name="decision" value="deny">Deny</button>
+      </form>
+    <% } %>
+  </article>
+<% }) %>
+</div>
+<%- include('../partials/footer') %>
