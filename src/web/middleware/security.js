@@ -43,13 +43,12 @@ export function attachCsrf(req, res, next) {
 }
 
 /**
- * createApp.js expects an export named csrfToken.
- * This uses the same middleware as attachCsrf.
+ * Alias expected by createApp.js.
  */
 export const csrfToken = attachCsrf;
 
 /**
- * Checks CSRF token for forms / dashboard actions.
+ * Checks CSRF tokens on dashboard actions.
  */
 export function verifyCsrf(req, res, next) {
   const sessionToken = req.session?.csrfToken;
@@ -96,7 +95,7 @@ export function ensureAuthenticated(req, res, next) {
     return next();
   }
 
-  if (req.accepts('html')) {
+  if (req.accepts?.('html')) {
     return res.redirect('/auth/discord');
   }
 
@@ -107,53 +106,104 @@ export function ensureAuthenticated(req, res, next) {
 }
 
 /**
- * Alias used by some parts of the dashboard.
+ * Alias used by some routes.
  */
 export const requireAuth = ensureAuthenticated;
 
 /**
- * Requires access to the configured Discord guild.
+ * Requires the logged-in Discord account to belong to the configured guild.
  *
- * The exact user object can differ depending on how OAuth is implemented,
- * so this supports several common properties.
+ * Usage:
+ * ensureGuildAccess(client)
  */
-export function ensureGuildAccess(req, res, next) {
-  if (!req.user) {
-    return res.status(401).json({
-      success: false,
-      message: 'Authentication required.'
-    });
-  }
+export function ensureGuildAccess(client) {
+  return async function guildAccessMiddleware(req, res, next) {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          message: 'Authentication required.'
+        });
+      }
 
-  const accessFlags = [
-    req.user.guildAccess,
-    req.user.inGuild,
-    req.user.isGuildMember
-  ];
+      const guildId = process.env.DISCORD_GUILD_ID;
 
-  if (accessFlags.includes(true)) {
-    return next();
-  }
+      if (!guildId) {
+        console.error('[Security] DISCORD_GUILD_ID is missing.');
 
-  /*
-   * If the OAuth layer does not attach a guild-access property,
-   * allow the request to continue so the app's later permission/database
-   * checks can handle authorization.
-   */
-  if (accessFlags.every(value => value === undefined)) {
-    return next();
-  }
+        return res.status(500).json({
+          success: false,
+          message: 'Discord server is not configured.'
+        });
+      }
 
-  return res.status(403).json({
-    success: false,
-    message: 'You do not have access to this Discord server.'
-  });
+      let guild = client?.guilds?.cache?.get(guildId);
+
+      if (!guild && client?.guilds?.fetch) {
+        guild = await client.guilds.fetch(guildId).catch(() => null);
+      }
+
+      if (!guild) {
+        console.error(
+          `[Security] Could not access configured guild: ${guildId}`
+        );
+
+        return res.status(500).json({
+          success: false,
+          message: 'Configured Discord server could not be found.'
+        });
+      }
+
+      const discordId =
+        req.user.id ||
+        req.user.discordId ||
+        req.user.discord_id;
+
+      if (!discordId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Unable to identify your Discord account.'
+        });
+      }
+
+      const member = await guild.members.fetch(discordId).catch(() => null);
+
+      if (!member) {
+        return res.status(403).json({
+          success: false,
+          message: 'You must be a member of the LCSO Discord server.'
+        });
+      }
+
+      req.discordMember = member;
+
+      next();
+    } catch (error) {
+      console.error('[Security] Guild access check failed:', error);
+
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to verify Discord server access.'
+      });
+    }
+  };
 }
 
 /**
- * Requires administrator permission for dashboard routes.
+ * Requires dashboard admin permissions.
+ *
+ * Can be used as:
+ * ensureWebAdmin
+ * or
+ * ensureWebAdmin()
  */
 export function ensureWebAdmin(req, res, next) {
+  if (arguments.length === 0) {
+    return function adminMiddleware(innerReq, innerRes, innerNext) {
+      return ensureWebAdmin(innerReq, innerRes, innerNext);
+    };
+  }
+
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -165,12 +215,15 @@ export function ensureWebAdmin(req, res, next) {
     ? req.user.permissions
     : [];
 
+  const memberPermissions = req.discordMember?.permissions;
+
   const isAdmin =
     req.user.isAdmin === true ||
     req.user.webAdmin === true ||
     req.user.admin === true ||
     permissions.includes('ADMIN') ||
-    permissions.includes('ADMINISTRATOR');
+    permissions.includes('ADMINISTRATOR') ||
+    memberPermissions?.has?.('Administrator');
 
   if (isAdmin) {
     return next();
@@ -182,9 +235,6 @@ export function ensureWebAdmin(req, res, next) {
   });
 }
 
-/**
- * LCSO rank hierarchy.
- */
 const WEB_RANKS = [
   'Cadet',
   'Deputy Sheriff',
@@ -201,11 +251,11 @@ const WEB_RANKS = [
 /**
  * Requires a specified LCSO rank or higher.
  *
- * Usage:
- * router.get('/example', ensureWebRank('Sergeant'), handler);
+ * Example:
+ * ensureWebRank('Sergeant')
  */
 export function ensureWebRank(requiredRank) {
-  return (req, res, next) => {
+  return function rankMiddleware(req, res, next) {
     if (!req.user) {
       return res.status(401).json({
         success: false,
@@ -222,6 +272,10 @@ export function ensureWebRank(requiredRank) {
     const userIndex = WEB_RANKS.indexOf(userRank);
 
     if (requiredIndex === -1) {
+      console.error(
+        `[Security] Unknown required dashboard rank: ${requiredRank}`
+      );
+
       return res.status(500).json({
         success: false,
         message: `Unknown required rank: ${requiredRank}`
