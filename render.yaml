@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: lcso-discord-bot
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.20.0
+      - key: NODE_ENV
+        value: production
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
+      - key: DISCORD_CALLBACK_URL
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: SESSION_SECRET
+        sync: false

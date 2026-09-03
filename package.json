@@ -1,0 +1,32 @@
+{
+  "name": "lcso-erlc-discord-bot",
+  "version": "1.0.0",
+  "description": "Production-ready Discord bot and staff dashboard for an ERLC Liberty County Sheriff's Office roleplay community.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "deploy-commands": "node scripts/deploy-commands.js",
+    "check": "node scripts/check-project.js"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "connect-mongo": "^6.0.0",
+    "discord.js": "^14.27.0",
+    "dotenv": "^16.6.1",
+    "ejs": "^3.1.10",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.1.0",
+    "express-session": "^1.18.2",
+    "helmet": "^8.3.0",
+    "mongoose": "^9.9.4",
+    "passport": "^0.7.0",
+    "passport-discord": "^0.1.4",
+    "winston": "^3.18.3",
+    "zod": "^4.1.11",
+    "mongodb": "^7.0.0"
+  }
+}
