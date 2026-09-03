@@ -1,0 +1,46 @@
+<%- include('../partials/head', { title }) %>
+<%- include('../partials/nav') %>
+<div class="page-head"><div><p class="eyebrow">PERSONNEL</p><h1>Deputies</h1></div></div>
+<% if (query.ok) { %><div class="alert success">Deputy roster updated.</div><% } %>
+<% if (query.error) { %><div class="alert danger">The requested roster change could not be completed.</div><% } %>
+<div class="panel">
+  <h2>Add Deputy</h2>
+  <form class="form-grid" method="post" action="/dashboard/deputies/add">
+    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+    <label>Discord User ID<input name="discordId" required pattern="[0-9]{15,25}"></label>
+    <label>Badge / Callsign<input name="badgeNumber" maxlength="30"></label>
+    <label>Rank<select name="rank"><% ranks.forEach(rank => { %><option><%= rank %></option><% }) %></select></label>
+    <button class="button" type="submit">Add Deputy</button>
+  </form>
+</div>
+<div class="panel table-wrap">
+<table>
+  <thead><tr><th>Deputy</th><th>Badge</th><th>Rank</th><th>Status</th><th>Activity</th><th>Joined</th><th>Actions</th></tr></thead>
+  <tbody>
+  <% deputies.forEach(d => { %>
+    <tr>
+      <td><strong><%= d.displayName %></strong><small><%= d.discordId %></small></td>
+      <td><%= d.badgeNumber || '—' %></td>
+      <td><%= d.rank %></td>
+      <td><span class="pill"><%= d.status %></span></td>
+      <td><%= (d.totalActivityMinutes / 60).toFixed(1) %>h</td>
+      <td><%= d.joinDate.toISOString().slice(0, 10) %></td>
+      <td>
+        <form class="inline-form" method="post" action="/dashboard/deputies/<%= d._id %>/rank">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <select name="rank"><% ranks.forEach(rank => { %><option <%= rank === d.rank ? 'selected' : '' %>><%= rank %></option><% }) %></select>
+          <input name="reason" placeholder="Reason" maxlength="1000">
+          <label class="check"><input type="checkbox" name="override"> override</label>
+          <button class="small" type="submit">Save</button>
+        </form>
+        <form class="inline-form" method="post" action="/dashboard/deputies/<%= d._id %>/remove" onsubmit="return confirm('Remove this deputy profile?')">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button class="small danger" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+  <% }) %>
+  </tbody>
+</table>
+</div>
+<%- include('../partials/footer') %>
