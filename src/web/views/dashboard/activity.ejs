@@ -1,0 +1,11 @@
+<%- include('../partials/head', { title }) %>
+<%- include('../partials/nav') %>
+<div class="page-head"><div><p class="eyebrow">OPERATIONS</p><h1>Activity Statistics</h1></div>
+<form class="inline-form" method="get"><input type="month" name="month" value="<%= month %>"><button class="small">View</button></form></div>
+<div class="stats-grid">
+<% typeRows.forEach(r => { %><div class="stat"><span><%= r._id %></span><strong><%= (r.minutes/60).toFixed(1) %>h</strong></div><% }) %>
+</div>
+<div class="panel table-wrap"><table><thead><tr><th>#</th><th>Discord User ID</th><th>Entries</th><th>Hours</th></tr></thead><tbody>
+<% rows.forEach((r, i) => { %><tr><td><%= i+1 %></td><td><%= r._id %></td><td><%= r.entries %></td><td><strong><%= (r.minutes/60).toFixed(1) %>h</strong></td></tr><% }) %>
+</tbody></table></div>
+<%- include('../partials/footer') %>
