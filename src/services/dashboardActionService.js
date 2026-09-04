@@ -2,78 +2,55 @@ import {
   EmbedBuilder,
 } from 'discord.js';
 
-import {
-  DashboardAction,
-} from '../database/models/DashboardAction.js';
-
-import {
-  Deputy,
-} from '../database/models/Deputy.js';
-
-import {
-  Promotion,
-} from '../database/models/Promotion.js';
-
-import {
-  LOA,
-} from '../database/models/LOA.js';
-
-import {
-  Training,
-} from '../database/models/Training.js';
-
-import {
-  Infraction,
-} from '../database/models/Infraction.js';
-
-import {
-  Application,
-} from '../database/models/Application.js';
-
-import {
-  Ticket,
-} from '../database/models/Ticket.js';
-
-import {
-  Guideline,
-} from '../database/models/Guideline.js';
-
-import {
-  getSettings,
-} from './settingsService.js';
-
-import {
-  sendLog,
-} from './logService.js';
-
-import {
-  postTrainingRequest,
-  updateTrainingMessage,
-} from './trainingService.js';
-
-import {
-  infoEmbed,
-  successEmbed,
-  warningEmbed,
-} from '../utils/embeds.js';
+import mongoose from 'mongoose';
 
 import {
   logger,
 } from '../utils/logger.js';
 
-import {
-  reviewApplication,
-} from './applicationService.js';
-
-import {
-  createTicket,
-  closeTicket,
-} from './ticketService.js';
-
 
 /* =========================================================
-   HELPERS
+   DATABASE HELPERS
    ========================================================= */
+
+function db() {
+  if (!mongoose.connection.db) {
+    throw new Error(
+      'MongoDB is not connected.',
+    );
+  }
+
+  return mongoose.connection.db;
+}
+
+
+function collection(
+  name,
+) {
+  return db().collection(
+    name,
+  );
+}
+
+
+function objectId(
+  value,
+) {
+  if (
+    !mongoose.Types.ObjectId.isValid(
+      value,
+    )
+  ) {
+    throw new Error(
+      `Invalid MongoDB ID: ${value}`,
+    );
+  }
+
+  return new mongoose.Types.ObjectId(
+    value,
+  );
+}
+
 
 function actorLabel(
   action,
@@ -86,16 +63,6 @@ function actorLabel(
     );
   }
 
-  if (
-    /^\d{15,22}$/.test(
-      String(
-        action.actorId ?? '',
-      ),
-    )
-  ) {
-    return `<@${action.actorId}>`;
-  }
-
   return String(
     action.actorId ??
       'Unknown',
@@ -105,63 +72,58 @@ function actorLabel(
 
 function splitText(
   value,
-  limit = 3900,
+  max = 3900,
 ) {
-  let remaining =
+  let text =
     String(
-      value ?? '',
-    );
+      value ??
+        '',
+    ).trim();
 
-  if (
-    remaining.length <=
-    limit
-  ) {
+  if (!text) {
     return [
-      remaining ||
-        'No content provided.',
+      'No content provided.',
     ];
   }
 
   const parts = [];
 
   while (
-    remaining.length >
-    limit
+    text.length >
+    max
   ) {
-    let cut =
-      remaining.lastIndexOf(
+    let position =
+      text.lastIndexOf(
         '\n',
-        limit,
+        max,
       );
 
     if (
-      cut <
-      Math.floor(
-        limit * 0.5,
-      )
+      position <
+      max * 0.5
     ) {
-      cut =
-        limit;
+      position =
+        max;
     }
 
     parts.push(
-      remaining.slice(
+      text.slice(
         0,
-        cut,
+        position,
       ),
     );
 
-    remaining =
-      remaining
+    text =
+      text
         .slice(
-          cut,
+          position,
         )
         .trimStart();
   }
 
-  if (remaining) {
+  if (text) {
     parts.push(
-      remaining,
+      text,
     );
   }
 
@@ -169,145 +131,143 @@ function splitText(
 }
 
 
-function configuredRankIds(
-  settings,
-) {
-  if (
-    Array.isArray(
-      settings.rankRoleIds,
-    ) &&
-    settings.rankRoleIds.length
-  ) {
-    return [
-      ...settings.rankRoleIds,
-    ];
-  }
-
-  if (
-    settings.rankRoles
-  ) {
-    if (
-      typeof settings.rankRoles.values ===
-      'function'
-    ) {
-      return [
-        ...settings.rankRoles.values(),
-      ].filter(Boolean);
-    }
-
-    return Object.values(
-      settings.rankRoles,
-    ).filter(Boolean);
-  }
-
-  return [];
-}
-
-
 /* =========================================================
    GUIDELINE EMBED
    ========================================================= */
 
-async function postGuidelineEmbed(
+async function sendGuidelineEmbed(
   client,
   action,
 ) {
   const guidelineId =
-    action.payload
-      ?.guidelineId;
+    String(
+      action.payload
+        ?.guidelineId ??
+        '',
+    );
 
   const channelId =
-    action.payload
-      ?.channelId;
+    String(
+      action.payload
+        ?.channelId ??
+        '',
+    );
 
   if (!guidelineId) {
     throw new Error(
-      'Guideline ID is missing from dashboard action.',
+      'Guideline ID missing.',
     );
   }
 
   if (!channelId) {
     throw new Error(
-      'Discord channel ID is missing from dashboard action.',
+      'Discord channel ID missing.',
     );
   }
 
+
   const guideline =
-    await Guideline.findOne({
+    await collection(
+      'guidelines',
+    ).findOne({
       _id:
-        guidelineId,
+        objectId(
+          guidelineId,
+        ),
 
       guildId:
         action.guildId,
     });
 
+
   if (!guideline) {
     throw new Error(
-      'Guideline not found in MongoDB.',
+      'Guideline could not be found in MongoDB.',
     );
   }
 
+
   const guild =
-    await client.guilds.fetch(
+    client.guilds.cache.get(
       action.guildId,
     );
 
-  const channel =
-    await guild.channels
-      .fetch(
-        channelId,
-      )
-      .catch(
-        () => null,
-      );
+  if (!guild) {
+    throw new Error(
+      'Discord server is not available in bot cache.',
+    );
+  }
+
+
+  let channel =
+    guild.channels.cache.get(
+      channelId,
+    );
+
+
+  if (!channel) {
+    channel =
+      await guild.channels
+        .fetch(
+          channelId,
+        )
+        .catch(
+          () => null,
+        );
+  }
+
 
   if (
     !channel ||
     !channel.isTextBased()
   ) {
     throw new Error(
-      'Selected Discord channel does not exist or is not a text channel.',
+      'Selected Discord channel was not found or is not a text channel.',
     );
   }
+
 
   const parts =
     splitText(
       guideline.content,
     );
 
-  let firstMessage =
+
+  let firstMessageId =
     null;
 
+
   for (
-    let index = 0;
-    index <
+    let i = 0;
+    i <
     parts.length;
-    index++
+    i++
   ) {
+    const title =
+      i === 0
+        ? String(
+            guideline.title ??
+              'LCSO Guideline',
+          )
+        : `${String(
+            guideline.title ??
+              'LCSO Guideline',
+          )} • Continued`;
+
+
     const embed =
       new EmbedBuilder()
         .setColor(
           0xc7a66a,
         )
         .setTitle(
-          index === 0
-            ? String(
-                guideline.title ??
-                  'LCSO Guideline',
-              ).slice(
-                0,
-                256,
-              )
-            : `${String(
-                guideline.title ??
-                  'LCSO Guideline',
-              ).slice(
-                0,
-                230,
-              )} • Continued`,
+          title.slice(
+            0,
+            256,
+          ),
         )
         .setDescription(
-          parts[index],
+          parts[i],
         )
         .setFooter({
           text:
@@ -315,8 +275,9 @@ async function postGuidelineEmbed(
         })
         .setTimestamp();
 
+
     if (
-      index === 0 &&
+      i === 0 &&
       guideline.category
     ) {
       embed.addFields({
@@ -336,8 +297,9 @@ async function postGuidelineEmbed(
       });
     }
 
+
     if (
-      index === 0 &&
+      i === 0 &&
       guideline.summary
     ) {
       embed.addFields({
@@ -354,6 +316,7 @@ async function postGuidelineEmbed(
       });
     }
 
+
     const message =
       await channel.send({
         embeds: [
@@ -365,68 +328,60 @@ async function postGuidelineEmbed(
         },
       });
 
-    if (!firstMessage) {
-      firstMessage =
-        message;
+
+    if (!firstMessageId) {
+      firstMessageId =
+        message.id;
     }
   }
 
-  try {
-    guideline.postedChannelId =
-      channel.id;
 
-    guideline.postedMessageId =
-      firstMessage?.id ??
-      null;
+  await collection(
+    'guidelines',
+  ).updateOne(
+    {
+      _id:
+        guideline._id,
+    },
 
-    await guideline.save();
-  } catch (error) {
-    logger.warn(
-      'Guideline sent but Discord message metadata could not be saved',
-      {
-        error:
-          error?.message ??
-          String(error),
+    {
+      $set: {
+        postedChannelId:
+          channel.id,
+
+        postedMessageId:
+          firstMessageId,
+
+        updatedAt:
+          new Date(),
       },
-    );
-  }
+    },
+  );
 
-  try {
-    await sendLog(
-      guild,
-      'guideline',
 
-      infoEmbed(
-        'Guideline Published',
+  logger.info(
+    'Guideline embed sent',
+    {
+      title:
+        guideline.title,
 
-        `**${guideline.title}** was published in <#${channel.id}> by **${actorLabel(
-          action,
-        )}**.`,
-      ),
-    );
-  } catch (error) {
-    logger.warn(
-      'Guideline was sent but guideline log could not be sent',
-      {
-        error:
-          error?.message ??
-          String(error),
-      },
-    );
-  }
+      channelId:
+        channel.id,
+
+      messages:
+        parts.length,
+    },
+  );
+
 
   return {
-    guidelineId:
-      String(
-        guideline._id,
-      ),
+    guidelineId,
 
     channelId:
       channel.id,
 
     messageId:
-      firstMessage?.id ??
-      null,
+      firstMessageId,
 
     messagesSent:
       parts.length,
@@ -435,7 +390,7 @@ async function postGuidelineEmbed(
 
 
 /* =========================================================
-   DYNAMIC DISCORD RANK CHANGE
+   DISCORD RANK CHANGE
    ========================================================= */
 
 async function setMemberRankRole(
@@ -443,33 +398,43 @@ async function setMemberRankRole(
   action,
 ) {
   const deputyId =
-    action.payload
-      ?.deputyId;
+    String(
+      action.payload
+        ?.deputyId ??
+        '',
+    );
 
   const targetRoleId =
-    action.payload
-      ?.targetRoleId;
+    String(
+      action.payload
+        ?.targetRoleId ??
+        '',
+    );
 
-  if (!deputyId) {
+
+  if (
+    !deputyId ||
+    !targetRoleId
+  ) {
     throw new Error(
-      'Deputy ID is missing.',
+      'Deputy ID or target role ID is missing.',
     );
   }
 
-  if (!targetRoleId) {
-    throw new Error(
-      'Target Discord role ID is missing.',
-    );
-  }
 
   const deputy =
-    await Deputy.findOne({
+    await collection(
+      'deputies',
+    ).findOne({
       _id:
-        deputyId,
+        objectId(
+          deputyId,
+        ),
 
       guildId:
         action.guildId,
     });
+
 
   if (!deputy) {
     throw new Error(
@@ -477,45 +442,48 @@ async function setMemberRankRole(
     );
   }
 
-  const guild =
-    await client.guilds.fetch(
-      action.guildId,
-    );
 
   const settings =
-    await getSettings(
-      guild.id,
-    );
+    await collection(
+      'settings',
+    ).findOne({
+      guildId:
+        action.guildId,
+    });
 
-  const rankIds =
-    configuredRankIds(
-      settings,
-    );
+
+  const rankRoleIds =
+    Array.isArray(
+      settings
+        ?.rankRoleIds,
+    )
+      ? settings.rankRoleIds
+      : [];
+
 
   if (
-    !rankIds.includes(
+    !rankRoleIds.includes(
       targetRoleId,
     )
   ) {
     throw new Error(
-      'Target Discord role is not configured as an LCSO rank.',
+      'Target role is not configured as an LCSO rank.',
     );
   }
 
-  const targetRole =
-    await guild.roles
-      .fetch(
-        targetRoleId,
-      )
-      .catch(
-        () => null,
-      );
 
-  if (!targetRole) {
+  const guild =
+    client.guilds.cache.get(
+      action.guildId,
+    );
+
+
+  if (!guild) {
     throw new Error(
-      'Target Discord rank role no longer exists.',
+      'Discord guild is not available.',
     );
   }
+
 
   const member =
     await guild.members
@@ -526,72 +494,83 @@ async function setMemberRankRole(
         () => null,
       );
 
+
   if (!member) {
     throw new Error(
-      'Deputy is not currently in the Discord server.',
+      'Deputy is not in the Discord server.',
     );
   }
 
-  const oldRoleId =
-    deputy.rankRoleId ??
-    action.payload
-      ?.previousRoleId ??
-    null;
 
-  const oldRole =
-    oldRoleId
-      ? await guild.roles
-          .fetch(
-            oldRoleId,
-          )
-          .catch(
-            () => null,
-          )
+  const targetRole =
+    guild.roles.cache.get(
+      targetRoleId,
+    );
+
+
+  if (!targetRole) {
+    throw new Error(
+      'Target Discord role does not exist.',
+    );
+  }
+
+
+  const currentRole =
+    deputy.rankRoleId
+      ? guild.roles.cache.get(
+          deputy.rankRoleId,
+        )
       : null;
 
-  const fromRank =
+
+  const oldRank =
     deputy.rankName ??
     deputy.rank ??
-    oldRole?.name ??
+    currentRole?.name ??
     'Unassigned';
 
-  let changeType =
+
+  let type =
     'Rank Change';
 
-  if (oldRole) {
+
+  if (currentRole) {
     if (
       targetRole.position >
-      oldRole.position
+      currentRole.position
     ) {
-      changeType =
+      type =
         'Promotion';
-    } else if (
+    }
+
+    if (
       targetRole.position <
-      oldRole.position
+      currentRole.position
     ) {
-      changeType =
+      type =
         'Demotion';
     }
   }
 
-  const rolesToRemove =
-    rankIds.filter(
-      (id) =>
-        id !==
+
+  const remove =
+    rankRoleIds.filter(
+      (roleId) =>
+        roleId !==
           targetRoleId &&
         member.roles.cache.has(
-          id,
+          roleId,
         ),
     );
 
-  if (
-    rolesToRemove.length
-  ) {
+
+  if (remove.length) {
     await member.roles.remove(
-      rolesToRemove,
-      `LCSO ${changeType}`,
+      remove,
+      `LCSO ${type}`,
     );
   }
+
 
   if (
     !member.roles.cache.has(
@@ -600,152 +579,105 @@ async function setMemberRankRole(
   ) {
     await member.roles.add(
       targetRoleId,
-      `LCSO ${changeType}`,
+      `LCSO ${type}`,
     );
   }
 
-  deputy.rankRoleId =
-    targetRole.id;
 
-  deputy.rankName =
-    targetRole.name;
-
-  deputy.rank =
-    targetRole.name;
-
-  await deputy.save();
-
-  const promotion =
-    await Promotion.create({
-      guildId:
-        guild.id,
-
-      deputyId:
+  await collection(
+    'deputies',
+  ).updateOne(
+    {
+      _id:
         deputy._id,
+    },
 
-      discordId:
-        deputy.discordId,
+    {
+      $set: {
+        rankRoleId:
+          targetRole.id,
 
-      type:
-        changeType,
+        rankName:
+          targetRole.name,
 
-      fromRank,
+        rank:
+          targetRole.name,
 
-      toRank:
-        targetRole.name,
-
-      fromRoleId:
-        oldRole?.id ??
-        oldRoleId ??
-        null,
-
-      toRoleId:
-        targetRole.id,
-
-      reason:
-        action.payload
-          ?.reason ||
-        'Rank changed from Command Center',
-
-      status:
-        'Completed',
-
-      requestedBy:
-        action.actorId,
-
-      reviewedBy:
-        action.actorId,
-
-      reviewedAt:
-        new Date(),
-
-      actionedBy:
-        action.actorId,
-    });
-
-  const embed =
-    successEmbed(
-      `${changeType} • ${targetRole.name}`,
-
-      `<@${deputy.discordId}> changed from **${fromRank}** to **${targetRole.name}**.`,
-    ).addFields(
-      {
-        name:
-          'Reason',
-
-        value:
-          String(
-            action.payload
-              ?.reason ||
-              'No reason provided',
-          ).slice(
-            0,
-            1024,
-          ),
+        updatedAt:
+          new Date(),
       },
+    },
+  );
 
-      {
-        name:
-          'Authorized by',
 
-        value:
-          actorLabel(
-            action,
-          ),
-      },
-    );
+  await collection(
+    'promotions',
+  ).insertOne({
+    guildId:
+      action.guildId,
 
-  if (
-    settings.promotionChannelId
-  ) {
-    const promotionChannel =
-      await guild.channels
-        .fetch(
-          settings
-            .promotionChannelId,
-        )
-        .catch(
-          () => null,
-        );
+    deputyId:
+      deputy._id,
 
-    if (
-      promotionChannel?.isTextBased()
-    ) {
-      await promotionChannel.send({
-        embeds: [
-          embed,
-        ],
-      });
-    }
-  }
+    discordId:
+      deputy.discordId,
 
-  try {
-    await sendLog(
-      guild,
-      'promotion',
-      embed,
-    );
-  } catch (error) {
-    logger.warn(
-      'Rank changed but promotion log could not be sent',
-      {
-        error:
-          error?.message ??
-          String(error),
-      },
-    );
-  }
+    type,
 
-  return {
-    promotionId:
+    fromRank:
+      oldRank,
+
+    toRank:
+      targetRole.name,
+
+    fromRoleId:
+      deputy.rankRoleId ??
+      null,
+
+    toRoleId:
+      targetRole.id,
+
+    reason:
       String(
-        promotion._id,
+        action.payload
+          ?.reason ??
+          'Rank changed from Command Center',
       ),
 
-    type:
-      changeType,
+    status:
+      'Completed',
 
-    fromRank,
+    actionedBy:
+      action.actorId,
+
+    createdAt:
+      new Date(),
+
+    updatedAt:
+      new Date(),
+  });
+
+
+  logger.info(
+    'Discord rank changed',
+    {
+      member:
+        deputy.discordId,
+
+      from:
+        oldRank,
+
+      to:
+        targetRole.name,
+    },
+  );
+
+
+  return {
+    type,
+
+    fromRank:
+      oldRank,
 
     toRank:
       targetRole.name,
@@ -757,626 +689,224 @@ async function setMemberRankRole(
 
 
 /* =========================================================
-   LOA
+   OTHER EXISTING ACTIONS
    ========================================================= */
 
-async function loaReview(
+async function runLegacyAction(
   client,
   action,
 ) {
-  const loa =
-    await LOA.findOne({
-      _id:
-        action.payload
-          ?.loaId,
-
-      guildId:
-        action.guildId,
-    });
-
-  if (!loa) {
-    throw new Error(
-      'LOA not found.',
-    );
-  }
-
-  const guild =
-    await client.guilds.fetch(
-      action.guildId,
-    );
-
-  const settings =
-    await getSettings(
-      guild.id,
-    );
-
-  const deputy =
-    await Deputy.findById(
-      loa.deputyId,
-    );
-
-  const member =
-    await guild.members
-      .fetch(
-        loa.discordId,
-      )
-      .catch(
-        () => null,
-      );
-
-  const now =
-    new Date();
-
-  if (
-    loa.status ===
-      'Approved' &&
-    loa.startDate <=
-      now &&
-    loa.endDate >=
-      now
+  switch (
+    action.type
   ) {
-    loa.status =
-      'Active';
+    /*
+     * These use dynamic imports.
+     *
+     * Therefore a missing optional service
+     * will NOT crash the entire bot on startup.
+     */
 
-    if (deputy) {
-      deputy.status =
-        'LOA';
-    }
-
-    if (
-      member &&
-      settings.loaRoleId
-    ) {
-      await member.roles
-        .add(
-          settings.loaRoleId,
-          'LCSO LOA approved',
-        )
-        .catch(
-          () => null,
+    case 'POST_TRAINING_REQUEST':
+    case 'TRAINING_REVIEW':
+    case 'TRAINING_UPDATE': {
+      const module =
+        await import(
+          './trainingService.js'
         );
-    }
 
-    await Promise.all([
-      loa.save(),
-      deputy
-        ? deputy.save()
-        : Promise.resolve(),
-    ]);
-  }
+      const training =
+        await collection(
+          'trainings',
+        ).findOne({
+          _id:
+            objectId(
+              action.payload
+                .trainingId,
+            ),
 
-  const embed =
-    (
-      loa.status ===
-      'Denied'
-        ? warningEmbed
-        : successEmbed
-    )(
-      `LOA ${loa.status}`,
+          guildId:
+            action.guildId,
+        });
 
-      `<@${loa.discordId}>'s leave request is **${loa.status}**.`,
-    ).addFields(
-      {
-        name:
-          'Reason',
 
-        value:
+      if (!training) {
+        throw new Error(
+          'Training not found.',
+        );
+      }
+
+
+      const guild =
+        client.guilds.cache.get(
+          action.guildId,
+        );
+
+
+      if (!guild) {
+        throw new Error(
+          'Guild not found.',
+        );
+      }
+
+
+      if (
+        action.type ===
+        'POST_TRAINING_REQUEST'
+      ) {
+        await module.postTrainingRequest(
+          guild,
+          training,
+        );
+      } else {
+        await module.updateTrainingMessage(
+          guild,
+          training,
+        );
+      }
+
+
+      return {
+        trainingId:
           String(
-            loa.reason ??
-              'No reason provided',
-          ).slice(
-            0,
-            1024,
+            training._id,
           ),
-      },
+      };
+    }
 
-      {
-        name:
-          'Reviewed by',
 
-        value:
-          actorLabel(
-            action,
-          ),
-      },
-    );
-
-  let edited =
-    false;
-
-  if (
-    loa.discordChannelId &&
-    loa.discordMessageId
-  ) {
-    const channel =
-      await guild.channels
-        .fetch(
-          loa.discordChannelId,
-        )
-        .catch(
-          () => null,
+    case 'APPLICATION_REVIEW': {
+      const module =
+        await import(
+          './applicationService.js'
         );
 
-    if (
-      channel?.isTextBased()
-    ) {
-      const message =
-        await channel.messages
+
+      const ApplicationModule =
+        await import(
+          '../database/models/Application.js'
+        );
+
+
+      const application =
+        await ApplicationModule.Application.findOne({
+          _id:
+            action.payload
+              .applicationId,
+
+          guildId:
+            action.guildId,
+        });
+
+
+      if (!application) {
+        throw new Error(
+          'Application not found.',
+        );
+      }
+
+
+      const guild =
+        client.guilds.cache.get(
+          action.guildId,
+        );
+
+
+      await module.reviewApplication({
+        guild,
+
+        application,
+
+        reviewerId:
+          action.actorId,
+
+        accepted:
+          Boolean(
+            action.payload
+              .accepted,
+          ),
+
+        reason:
+          action.payload
+            .reason ||
+          'Reviewed from dashboard',
+      });
+
+
+      return {
+        applicationId:
+          String(
+            application._id,
+          ),
+      };
+    }
+
+
+    case 'CREATE_TICKET': {
+      const module =
+        await import(
+          './ticketService.js'
+        );
+
+
+      const guild =
+        client.guilds.cache.get(
+          action.guildId,
+        );
+
+
+      const member =
+        await guild.members
           .fetch(
-            loa.discordMessageId,
+            action.payload
+              .ownerId,
           )
           .catch(
             () => null,
           );
 
-      if (message) {
-        await message.edit({
-          embeds: [
-            embed,
-          ],
 
-          components: [],
+      if (!member) {
+        throw new Error(
+          'Ticket owner not found.',
+        );
+      }
+
+
+      const result =
+        await module.createTicket({
+          guild,
+
+          owner:
+            member,
+
+          type:
+            action.payload
+              .type,
+
+          subject:
+            action.payload
+              .subject ??
+            '',
         });
 
-        edited =
-          true;
-      }
-    }
-  }
 
-  if (
-    !edited &&
-    settings
-      .loaRequestChannelId
-  ) {
-    const channel =
-      await guild.channels
-        .fetch(
-          settings
-            .loaRequestChannelId,
-        )
-        .catch(
-          () => null,
-        );
-
-    if (
-      channel?.isTextBased()
-    ) {
-      await channel.send({
-        embeds: [
-          embed,
-        ],
-      });
-    }
-  }
-
-  try {
-    await sendLog(
-      guild,
-      'loa',
-      embed,
-    );
-  } catch (error) {
-    logger.warn(
-      'LOA processed but LOA log failed',
-      {
-        error:
-          error?.message ??
-          String(error),
-      },
-    );
-  }
-
-  return {
-    loaId:
-      String(
-        loa._id,
-      ),
-
-    status:
-      loa.status,
-  };
-}
-
-
-/* =========================================================
-   TRAINING
-   ========================================================= */
-
-async function trainingAction(
-  client,
-  action,
-) {
-  const training =
-    await Training.findOne({
-      _id:
-        action.payload
-          ?.trainingId,
-
-      guildId:
-        action.guildId,
-    });
-
-  if (!training) {
-    throw new Error(
-      'Training not found.',
-    );
-  }
-
-  const guild =
-    await client.guilds.fetch(
-      action.guildId,
-    );
-
-  if (
-    action.type ===
-    'POST_TRAINING_REQUEST'
-  ) {
-    await postTrainingRequest(
-      guild,
-      training,
-    );
-  } else {
-    await updateTrainingMessage(
-      guild,
-      training,
-    );
-  }
-
-  if (
-    action.type !==
-    'POST_TRAINING_REQUEST'
-  ) {
-    try {
-      await sendLog(
-        guild,
-        'training',
-
-        infoEmbed(
-          'Training Updated',
-
-          `<@${training.traineeDiscordId}> • **${training.type}** • ${training.status}`,
-        ),
-      );
-    } catch (error) {
-      logger.warn(
-        'Training updated but training log failed',
-        {
-          error:
-            error?.message ??
-            String(error),
-        },
-      );
-    }
-  }
-
-  return {
-    trainingId:
-      String(
-        training._id,
-      ),
-
-    status:
-      training.status,
-  };
-}
-
-
-/* =========================================================
-   INFRACTIONS
-   ========================================================= */
-
-async function infractionNotify(
-  client,
-  action,
-) {
-  const infraction =
-    await Infraction.findOne({
-      _id:
-        action.payload
-          ?.infractionId,
-
-      guildId:
-        action.guildId,
-    });
-
-  if (!infraction) {
-    throw new Error(
-      'Infraction not found.',
-    );
-  }
-
-  const guild =
-    await client.guilds.fetch(
-      action.guildId,
-    );
-
-  const embed =
-    warningEmbed(
-      `Infraction • ${infraction.type}`,
-
-      `<@${infraction.discordId}> received **${infraction.type}**.`,
-    ).addFields(
-      {
-        name:
-          'Points',
-
-        value:
+      return {
+        ticketId:
           String(
-            infraction.points ??
-              0,
+            result.ticket._id,
           ),
 
-        inline:
-          true,
-      },
-
-      {
-        name:
-          'Reason',
-
-        value:
-          String(
-            infraction.reason ??
-              'No reason provided',
-          ).slice(
-            0,
-            1024,
-          ),
-      },
-
-      {
-        name:
-          'Issued by',
-
-        value:
-          actorLabel(
-            action,
-          ),
-      },
-    );
-
-  await sendLog(
-    guild,
-    'infraction',
-    embed,
-  );
-
-  return {
-    infractionId:
-      String(
-        infraction._id,
-      ),
-  };
-}
+        channelId:
+          result.channel.id,
+      };
+    }
 
 
-/* =========================================================
-   APPLICATIONS
-   ========================================================= */
-
-async function applicationReview(
-  client,
-  action,
-) {
-  const application =
-    await Application.findOne({
-      _id:
-        action.payload
-          ?.applicationId,
-
-      guildId:
-        action.guildId,
-    });
-
-  if (!application) {
-    throw new Error(
-      'Application not found.',
-    );
-  }
-
-  const guild =
-    await client.guilds.fetch(
-      action.guildId,
-    );
-
-  await reviewApplication({
-    guild,
-
-    application,
-
-    reviewerId:
-      action.actorId,
-
-    accepted:
-      Boolean(
-        action.payload
-          ?.accepted,
-      ),
-
-    reason:
-      action.payload
-        ?.reason ||
-      'Reviewed from Command Center',
-  });
-
-  return {
-    applicationId:
-      String(
-        application._id,
-      ),
-
-    status:
-      application.status,
-  };
-}
-
-
-/* =========================================================
-   CREATE TICKET
-   ========================================================= */
-
-async function createTicketAction(
-  client,
-  action,
-) {
-  const ownerId =
-    action.payload
-      ?.ownerId;
-
-  if (!ownerId) {
-    throw new Error(
-      'Ticket owner ID is missing.',
-    );
-  }
-
-  const guild =
-    await client.guilds.fetch(
-      action.guildId,
-    );
-
-  const member =
-    await guild.members
-      .fetch(
-        ownerId,
-      )
-      .catch(
-        () => null,
+    default:
+      throw new Error(
+        `Unsupported dashboard action: ${action.type}`,
       );
-
-  if (!member) {
-    throw new Error(
-      'Ticket owner is not in the Discord server.',
-    );
   }
-
-  const created =
-    await createTicket({
-      guild,
-
-      owner:
-        member,
-
-      type:
-        action.payload
-          ?.type,
-
-      subject:
-        action.payload
-          ?.subject ||
-        '',
-    });
-
-  return {
-    ticketId:
-      String(
-        created.ticket._id,
-      ),
-
-    channelId:
-      created.channel.id,
-
-    existing:
-      Boolean(
-        created.existing,
-      ),
-  };
-}
-
-
-/* =========================================================
-   CLOSE TICKET
-   ========================================================= */
-
-async function closeTicketAction(
-  client,
-  action,
-) {
-  const ticket =
-    await Ticket.findOne({
-      _id:
-        action.payload
-          ?.ticketId,
-
-      guildId:
-        action.guildId,
-
-      status:
-        'Open',
-    });
-
-  if (!ticket) {
-    throw new Error(
-      'Open ticket not found.',
-    );
-  }
-
-  const guild =
-    await client.guilds.fetch(
-      action.guildId,
-    );
-
-  const channel =
-    await guild.channels
-      .fetch(
-        ticket.channelId,
-      )
-      .catch(
-        () => null,
-      );
-
-  if (
-    !channel ||
-    !channel.isTextBased()
-  ) {
-    throw new Error(
-      'Ticket channel not found.',
-    );
-  }
-
-  ticket.closeReason =
-    action.payload
-      ?.reason ||
-    'Closed from Command Center';
-
-  await ticket.save();
-
-  const closed =
-    await closeTicket({
-      guild,
-
-      channel,
-
-      actorId:
-        action.actorId,
-
-      reason:
-        action.payload
-          ?.reason ||
-        'Closed from Command Center',
-    });
-
-  setTimeout(
-    () => {
-      channel
-        .delete(
-          'LCSO ticket closed from dashboard',
-        )
-        .catch(
-          () => null,
-        );
-    },
-
-    4000,
-  ).unref();
-
-  return {
-    ticketId:
-      String(
-        closed?._id ??
-        ticket._id,
-      ),
-  };
 }
 
 
@@ -1392,10 +922,11 @@ async function execute(
     action.type
   ) {
     case 'POST_GUIDELINE_EMBED':
-      return postGuidelineEmbed(
+      return sendGuidelineEmbed(
         client,
         action,
       );
+
 
     case 'SET_MEMBER_RANK_ROLE':
       return setMemberRankRole(
@@ -1403,62 +934,60 @@ async function execute(
         action,
       );
 
-    case 'LOA_REVIEW':
-      return loaReview(
-        client,
-        action,
-      );
-
-    case 'POST_TRAINING_REQUEST':
-    case 'TRAINING_REVIEW':
-    case 'TRAINING_UPDATE':
-      return trainingAction(
-        client,
-        action,
-      );
-
-    case 'INFRACTION_NOTIFY':
-      return infractionNotify(
-        client,
-        action,
-      );
-
-    case 'APPLICATION_REVIEW':
-      return applicationReview(
-        client,
-        action,
-      );
-
-    case 'CREATE_TICKET':
-      return createTicketAction(
-        client,
-        action,
-      );
-
-    case 'CLOSE_TICKET':
-      return closeTicketAction(
-        client,
-        action,
-      );
 
     default:
-      throw new Error(
-        `Unsupported dashboard action: ${action.type}`,
+      return runLegacyAction(
+        client,
+        action,
       );
   }
 }
 
 
 /* =========================================================
-   PROCESS ONE ACTION
+   PROCESS ACTION
    ========================================================= */
 
 export async function processNextDashboardAction(
   client,
 ) {
+  /*
+   * Read oldest pending action.
+   */
   const action =
-    await DashboardAction.findOneAndUpdate(
+    await collection(
+      'dashboardactions',
+    ).findOne(
       {
+        status:
+          'Pending',
+      },
+
+      {
+        sort: {
+          createdAt:
+            1,
+        },
+      },
+    );
+
+
+  if (!action) {
+    return false;
+  }
+
+
+  /*
+   * Claim it.
+   */
+  const claimed =
+    await collection(
+      'dashboardactions',
+    ).updateOne(
+      {
+        _id:
+          action._id,
+
         status:
           'Pending',
       },
@@ -1477,21 +1006,26 @@ export async function processNextDashboardAction(
             1,
         },
       },
-
-      {
-        sort: {
-          createdAt:
-            1,
-        },
-
-        new:
-          true,
-      },
     );
 
-  if (!action) {
-    return false;
+
+  if (
+    claimed.modifiedCount !==
+    1
+  ) {
+    return true;
   }
+
+
+  action.status =
+    'Processing';
+
+  action.attempts =
+    Number(
+      action.attempts ??
+        0,
+    ) + 1;
+
 
   logger.info(
     'Processing dashboard action',
@@ -1503,11 +1037,9 @@ export async function processNextDashboardAction(
 
       type:
         action.type,
-
-      guildId:
-        action.guildId,
     },
   );
+
 
   try {
     const result =
@@ -1516,22 +1048,35 @@ export async function processNextDashboardAction(
         action,
       );
 
-    action.status =
-      'Completed';
 
-    action.error =
-      null;
+    await collection(
+      'dashboardactions',
+    ).updateOne(
+      {
+        _id:
+          action._id,
+      },
 
-    action.result =
-      result ?? {};
+      {
+        $set: {
+          status:
+            'Completed',
 
-    action.processedAt =
-      new Date();
+          result:
+            result ?? {},
 
-    action.updatedAt =
-      new Date();
+          error:
+            null,
 
-    await action.save();
+          processedAt:
+            new Date(),
+
+          updatedAt:
+            new Date(),
+        },
+      },
+    );
+
 
     logger.info(
       'Dashboard action completed',
@@ -1539,7 +1084,7 @@ export async function processNextDashboardAction(
         actionId:
           String(
             action._id,
-          ),
+        ),
 
         type:
           action.type,
@@ -1550,18 +1095,36 @@ export async function processNextDashboardAction(
       error?.message ??
       String(error);
 
-    action.error =
-      message;
 
-    action.status =
-      action.attempts >= 3
+    const nextStatus =
+      action.attempts >=
+      3
         ? 'Failed'
         : 'Pending';
 
-    action.updatedAt =
-      new Date();
 
-    await action.save();
+    await collection(
+      'dashboardactions',
+    ).updateOne(
+      {
+        _id:
+          action._id,
+      },
+
+      {
+        $set: {
+          status:
+            nextStatus,
+
+          error:
+            message,
+
+          updatedAt:
+            new Date(),
+        },
+      },
+    );
+
 
     logger.error(
       'Dashboard action failed',
@@ -1569,7 +1132,7 @@ export async function processNextDashboardAction(
         actionId:
           String(
             action._id,
-          ),
+        ),
 
         type:
           action.type,
@@ -1577,8 +1140,7 @@ export async function processNextDashboardAction(
         attempts:
           action.attempts,
 
-        status:
-          action.status,
+        nextStatus,
 
         error:
           error?.stack ??
@@ -1587,66 +1149,13 @@ export async function processNextDashboardAction(
     );
   }
 
+
   return true;
 }
 
 
 /* =========================================================
-   RECOVER ACTIONS AFTER A BOT CRASH
-   ========================================================= */
-
-async function recoverStaleActions() {
-  const cutoff =
-    new Date(
-      Date.now() -
-        5 *
-          60 *
-          1000,
-    );
-
-  const result =
-    await DashboardAction.updateMany(
-      {
-        status:
-          'Processing',
-
-        updatedAt: {
-          $lt:
-            cutoff,
-        },
-      },
-
-      {
-        $set: {
-          status:
-            'Pending',
-
-          error:
-            'Recovered after bot restart.',
-
-          updatedAt:
-            new Date(),
-        },
-      },
-    );
-
-  if (
-    result.modifiedCount >
-    0
-  ) {
-    logger.info(
-      'Recovered stale dashboard actions',
-      {
-        count:
-          result.modifiedCount,
-      },
-    );
-  }
-}
-
-
-/* =========================================================
-   ACTION PROCESSOR
+   PROCESSOR
    ========================================================= */
 
 export function startDashboardActionProcessor(
@@ -1656,31 +1165,21 @@ export function startDashboardActionProcessor(
     'Dashboard action processor started',
   );
 
-  let busy =
+
+  let running =
     false;
 
-  recoverStaleActions().catch(
-    (error) => {
-      logger.error(
-        'Failed to recover stale dashboard actions',
-        {
-          error:
-            error?.stack ??
-            error?.message ??
-            String(error),
-        },
-      );
-    },
-  );
 
   const tick =
     async () => {
-      if (busy) {
+      if (running) {
         return;
       }
 
-      busy =
+
+      running =
         true;
+
 
       try {
         for (
@@ -1693,13 +1192,14 @@ export function startDashboardActionProcessor(
               client,
             );
 
+
           if (!processed) {
             break;
           }
         }
       } catch (error) {
         logger.error(
-          'Dashboard action queue tick failed',
+          'Dashboard action processor tick failed',
           {
             error:
               error?.stack ??
@@ -1708,20 +1208,30 @@ export function startDashboardActionProcessor(
           },
         );
       } finally {
-        busy =
+        running =
           false;
       }
     };
 
+
+  /*
+   * Process immediately.
+   */
   tick();
 
+
+  /*
+   * Then every three seconds.
+   */
   const timer =
     setInterval(
       tick,
       3000,
     );
 
+
   timer.unref();
+
 
   return timer;
 }
