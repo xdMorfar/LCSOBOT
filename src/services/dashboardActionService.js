@@ -35,8 +35,11 @@ import {
 } from '../database/models/Guideline.js';
 
 import {
+  RANK_LEVEL,
+} from '../config/constants.js';
+
+import {
   changeRank,
-  changeRankRole,
 } from './rankService.js';
 
 import {
@@ -71,6 +74,7 @@ import {
   closeTicket,
 } from './ticketService.js';
 
+
 function actorLabel(
   action,
 ) {
@@ -95,221 +99,31 @@ function actorLabel(
   );
 }
 
-async function dynamicRankChange(
-  client,
-  action,
-) {
-  const deputy =
-    await Deputy.findOne({
-      _id:
-        action.payload.deputyId,
-
-      guildId:
-        action.guildId,
-    });
-
-  if (!deputy) {
-    throw new Error(
-      'Deputy not found.',
-    );
-  }
-
-  const guild =
-    await client.guilds.fetch(
-      action.guildId,
-    );
-
-  const from =
-    deputy.rankName ||
-    deputy.rank ||
-    'Unassigned';
-
-  const record =
-    await changeRankRole({
-      guild,
-
-      deputy,
-
-      targetRoleId:
-        action.payload
-          .targetRoleId,
-
-      actorId:
-        action.actorId,
-
-      reason:
-        action.payload.reason ||
-        'Dashboard rank change',
-    });
-
-  const embed =
-    successEmbed(
-      `${record.type} • ${record.toRank}`,
-
-      `<@${deputy.discordId}> changed from **${from}** to **${record.toRank}**.`,
-    ).addFields(
-      {
-        name:
-          'Reason',
-
-        value:
-          action.payload.reason ||
-          'No reason provided',
-      },
-
-      {
-        name:
-          'Authorized by',
-
-        value:
-          actorLabel(
-            action,
-          ),
-      },
-    );
-
-  const settings =
-    await getSettings(
-      guild.id,
-    );
-
-  if (
-    settings.promotionChannelId
-  ) {
-    const channel =
-      await guild.channels
-        .fetch(
-          settings.promotionChannelId,
-        )
-        .catch(
-          () => null,
-        );
-
-    if (
-      channel?.isTextBased()
-    ) {
-      await channel.send({
-        embeds: [
-          embed,
-        ],
-      });
-    }
-  }
-
-  await sendLog(
-    guild,
-    'promotion',
-    embed,
-  );
-
-  return {
-    promotionId:
-      String(
-        record._id,
-      ),
-
-    roleId:
-      record.toRoleId,
-
-    rank:
-      record.toRank,
-  };
-}
-
-async function legacyRankChange(
-  client,
-  action,
-) {
-  const deputy =
-    await Deputy.findOne({
-      _id:
-        action.payload.deputyId,
-
-      guildId:
-        action.guildId,
-    });
-
-  if (!deputy) {
-    throw new Error(
-      'Deputy not found.',
-    );
-  }
-
-  const guild =
-    await client.guilds.fetch(
-      action.guildId,
-    );
-
-  const record =
-    await changeRank({
-      guild,
-
-      deputy,
-
-      targetRank:
-        action.payload.targetRank,
-
-      actorId:
-        action.actorId,
-
-      reason:
-        action.payload.reason ||
-        'Dashboard rank change',
-
-      type:
-        'Promotion',
-
-      overrideRequirements:
-        Boolean(
-          action.payload
-            .overrideRequirements,
-        ),
-    });
-
-  return {
-    promotionId:
-      String(
-        record._id,
-      ),
-  };
-}
 
 function splitText(
-  text,
+  value,
   limit = 3900,
 ) {
-  const value =
+  let remaining =
     String(
-      text ?? '',
+      value ?? '',
     );
 
   if (
-    value.length <= limit
+    remaining.length <=
+    limit
   ) {
     return [
-      value,
+      remaining,
     ];
   }
 
-  const chunks = [];
-
-  let remaining =
-    value;
+  const parts = [];
 
   while (
-    remaining.length
+    remaining.length >
+    limit
   ) {
-    if (
-      remaining.length <=
-      limit
-    ) {
-      chunks.push(
-        remaining,
-      );
-
-      break;
-    }
-
     let cut =
       remaining.lastIndexOf(
         '\n',
@@ -319,14 +133,14 @@ function splitText(
     if (
       cut <
       Math.floor(
-        limit * 0.6,
+        limit * 0.5,
       )
     ) {
       cut =
         limit;
     }
 
-    chunks.push(
+    parts.push(
       remaining.slice(
         0,
         cut,
@@ -341,8 +155,19 @@ function splitText(
         .trimStart();
   }
 
-  return chunks;
+  if (remaining) {
+    parts.push(
+      remaining,
+    );
+  }
+
+  return parts;
 }
+
+
+/* =========================================================
+   GUIDELINE DISCORD EMBED
+   ========================================================= */
 
 async function postGuidelineEmbed(
   client,
@@ -380,14 +205,15 @@ async function postGuidelineEmbed(
       );
 
   if (
-    !channel?.isTextBased()
+    !channel ||
+    !channel.isTextBased()
   ) {
     throw new Error(
-      'Guideline channel is not a text channel.',
+      'Discord channel not found or is not a text channel.',
     );
   }
 
-  const parts =
+  const contentParts =
     splitText(
       guideline.content,
     );
@@ -398,7 +224,7 @@ async function postGuidelineEmbed(
   for (
     let index = 0;
     index <
-    parts.length;
+    contentParts.length;
     index++
   ) {
     const embed =
@@ -412,7 +238,7 @@ async function postGuidelineEmbed(
             : `${guideline.title} • Continued`,
         )
         .setDescription(
-          parts[index],
+          contentParts[index],
         )
         .setFooter({
           text:
@@ -429,7 +255,9 @@ async function postGuidelineEmbed(
           'Category',
 
         value:
-          guideline.category,
+          String(
+            guideline.category,
+          ),
 
         inline:
           true,
@@ -459,6 +287,10 @@ async function postGuidelineEmbed(
         embeds: [
           embed,
         ],
+
+        allowedMentions: {
+          parse: [],
+        },
       });
 
     if (!firstMessage) {
@@ -479,6 +311,7 @@ async function postGuidelineEmbed(
   await sendLog(
     guild,
     'guideline',
+
     infoEmbed(
       'Guideline Published',
 
@@ -502,6 +335,168 @@ async function postGuidelineEmbed(
       null,
   };
 }
+
+
+/* =========================================================
+   RANK CHANGE
+   ========================================================= */
+
+async function rankChange(
+  client,
+  action,
+) {
+  const deputy =
+    await Deputy.findOne({
+      _id:
+        action.payload
+          .deputyId,
+
+      guildId:
+        action.guildId,
+    });
+
+  if (!deputy) {
+    throw new Error(
+      'Deputy not found.',
+    );
+  }
+
+  const guild =
+    await client.guilds.fetch(
+      action.guildId,
+    );
+
+  const target =
+    action.payload
+      .targetRank;
+
+  const type =
+    RANK_LEVEL[target] >
+    RANK_LEVEL[
+      deputy.rank
+    ]
+      ? 'Promotion'
+      : 'Demotion';
+
+  if (
+    RANK_LEVEL[target] ===
+    RANK_LEVEL[
+      deputy.rank
+    ]
+  ) {
+    throw new Error(
+      'Target rank equals current rank.',
+    );
+  }
+
+  const from =
+    deputy.rank;
+
+  const record =
+    await changeRank({
+      guild,
+
+      deputy,
+
+      targetRank:
+        target,
+
+      actorId:
+        action.actorId,
+
+      reason:
+        action.payload
+          .reason ||
+        'Dashboard rank change',
+
+      type,
+
+      overrideRequirements:
+        Boolean(
+          action.payload
+            .overrideRequirements,
+        ),
+    });
+
+  const embed =
+    successEmbed(
+      `${type} • ${target}`,
+
+      `<@${deputy.discordId}> has been ${
+        type ===
+        'Promotion'
+          ? 'promoted'
+          : 'demoted'
+      } from **${from}** to **${target}**.`,
+    ).addFields(
+      {
+        name:
+          'Reason',
+
+        value:
+          action.payload
+            .reason ||
+          'No reason provided',
+      },
+
+      {
+        name:
+          'Authorized by',
+
+        value:
+          actorLabel(
+            action,
+          ),
+      },
+    );
+
+  const settings =
+    await getSettings(
+      guild.id,
+    );
+
+  if (
+    settings.promotionChannelId
+  ) {
+    const channel =
+      await guild.channels
+        .fetch(
+          settings
+            .promotionChannelId,
+        )
+        .catch(
+          () => null,
+        );
+
+    if (
+      channel?.isTextBased()
+    ) {
+      await channel.send({
+        embeds: [
+          embed,
+        ],
+      });
+    }
+  }
+
+  await sendLog(
+    guild,
+    'promotion',
+    embed,
+  );
+
+  return {
+    promotionId:
+      String(
+        record._id,
+      ),
+  };
+}
+
+
+/* =========================================================
+   LOA
+   ========================================================= */
 
 async function loaReview(
   client,
@@ -660,12 +655,14 @@ async function loaReview(
 
   if (
     !edited &&
-    settings.loaRequestChannelId
+    settings
+      .loaRequestChannelId
   ) {
     const channel =
       await guild.channels
         .fetch(
-          settings.loaRequestChannelId,
+          settings
+            .loaRequestChannelId,
         )
         .catch(
           () => null,
@@ -698,6 +695,11 @@ async function loaReview(
       loa.status,
   };
 }
+
+
+/* =========================================================
+   TRAINING
+   ========================================================= */
 
 async function trainingAction(
   client,
@@ -765,6 +767,11 @@ async function trainingAction(
       training.status,
   };
 }
+
+
+/* =========================================================
+   INFRACTIONS
+   ========================================================= */
 
 async function infractionNotify(
   client,
@@ -843,6 +850,11 @@ async function infractionNotify(
   };
 }
 
+
+/* =========================================================
+   APPLICATIONS
+   ========================================================= */
+
 async function applicationReview(
   client,
   action,
@@ -883,9 +895,38 @@ async function applicationReview(
       ),
 
     reason:
-      action.payload.reason ||
+      action.payload
+        .reason ||
       'Reviewed from Command Center',
   });
+
+  const embed =
+    (
+      action.payload
+        .accepted
+        ? successEmbed
+        : warningEmbed
+    )(
+      action.payload
+        .accepted
+        ? 'Application Accepted'
+        : 'Application Denied',
+
+      `<@${application.applicantId}>'s application was **${
+        action.payload
+          .accepted
+          ? 'accepted'
+          : 'denied'
+      }** by **${actorLabel(
+        action,
+      )}**.`,
+    );
+
+  await sendLog(
+    guild,
+    'application',
+    embed,
+  );
 
   return {
     applicationId:
@@ -897,6 +938,11 @@ async function applicationReview(
       application.status,
   };
 }
+
+
+/* =========================================================
+   TICKETS
+   ========================================================= */
 
 async function createTicketAction(
   client,
@@ -910,7 +956,8 @@ async function createTicketAction(
   const member =
     await guild.members
       .fetch(
-        action.payload.ownerId,
+        action.payload
+          .ownerId,
       )
       .catch(
         () => null,
@@ -933,7 +980,8 @@ async function createTicketAction(
         action.payload.type,
 
       subject:
-        action.payload.subject ||
+        action.payload
+          .subject ||
         '',
     });
 
@@ -953,6 +1001,7 @@ async function createTicketAction(
   };
 }
 
+
 async function closeTicketAction(
   client,
   action,
@@ -960,7 +1009,8 @@ async function closeTicketAction(
   const ticket =
     await Ticket.findOne({
       _id:
-        action.payload.ticketId,
+        action.payload
+          .ticketId,
 
       guildId:
         action.guildId,
@@ -998,7 +1048,8 @@ async function closeTicketAction(
   }
 
   ticket.closeReason =
-    action.payload.reason ||
+    action.payload
+      .reason ||
     'Closed from Command Center';
 
   await ticket.save();
@@ -1006,13 +1057,15 @@ async function closeTicketAction(
   const closed =
     await closeTicket({
       guild,
+
       channel,
 
       actorId:
         action.actorId,
 
       reason:
-        action.payload.reason ||
+        action.payload
+          .reason ||
         'Closed from Command Center',
     });
 
@@ -1038,6 +1091,11 @@ async function closeTicketAction(
   };
 }
 
+
+/* =========================================================
+   ACTION ROUTER
+   ========================================================= */
+
 async function execute(
   client,
   action,
@@ -1045,20 +1103,14 @@ async function execute(
   switch (
     action.type
   ) {
-    case 'SET_MEMBER_RANK_ROLE':
-      return dynamicRankChange(
+    case 'POST_GUIDELINE_EMBED':
+      return postGuidelineEmbed(
         client,
         action,
       );
 
     case 'RANK_CHANGE':
-      return legacyRankChange(
-        client,
-        action,
-      );
-
-    case 'POST_GUIDELINE_EMBED':
-      return postGuidelineEmbed(
+      return rankChange(
         client,
         action,
       );
@@ -1070,7 +1122,9 @@ async function execute(
       );
 
     case 'POST_TRAINING_REQUEST':
+
     case 'TRAINING_REVIEW':
+
     case 'TRAINING_UPDATE':
       return trainingAction(
         client,
@@ -1107,6 +1161,11 @@ async function execute(
       );
   }
 }
+
+
+/* =========================================================
+   PROCESS QUEUE
+   ========================================================= */
 
 export async function processNextDashboardAction(
   client,
@@ -1200,6 +1259,11 @@ export async function processNextDashboardAction(
   return true;
 }
 
+
+/* =========================================================
+   ACTION LOOP
+   ========================================================= */
+
 export function startDashboardActionProcessor(
   client,
 ) {
@@ -1221,13 +1285,12 @@ export function startDashboardActionProcessor(
           i < 5;
           i++
         ) {
-          if (
-            !(
-              await processNextDashboardAction(
-                client,
-              )
-            )
-          ) {
+          const processed =
+            await processNextDashboardAction(
+              client,
+            );
+
+          if (!processed) {
             break;
           }
         }
