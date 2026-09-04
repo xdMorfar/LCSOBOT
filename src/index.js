@@ -35,6 +35,10 @@ import {
   logger,
 } from './utils/logger.js';
 
+import {
+  startDashboardActionProcessor,
+} from './services/dashboardActionService.js';
+
 
 const __dirname =
   path.dirname(
@@ -75,7 +79,7 @@ await loadEvents(
 
 
 /* =========================================================
-   DIRECT DISCORD SNAPSHOT SYNC
+   DISCORD SNAPSHOT
    ========================================================= */
 
 async function syncDashboardSnapshot() {
@@ -88,17 +92,23 @@ async function syncDashboardSnapshot() {
   }
 
   const guild =
-    await client.guilds.fetch(
+    client.guilds.cache.get(
       env.DISCORD_GUILD_ID,
     );
 
-  const [
-    roles,
-    channels,
-  ] = await Promise.all([
-    guild.roles.fetch(),
-    guild.channels.fetch(),
-  ]);
+  if (!guild) {
+    throw new Error(
+      `Discord guild ${env.DISCORD_GUILD_ID} is not available.`,
+    );
+  }
+
+
+  const roles =
+    guild.roles.cache;
+
+
+  const channels =
+    guild.channels.cache;
 
 
   const roleRows =
@@ -212,20 +222,6 @@ async function syncDashboardSnapshot() {
   );
 
 
-  const check =
-    await collection.findOne({
-      guildId:
-        guild.id,
-    });
-
-
-  if (!check) {
-    throw new Error(
-      'Snapshot write completed but document could not be read back.',
-    );
-  }
-
-
   logger.info(
     'DASHBOARD SNAPSHOT SYNCED',
     {
@@ -267,34 +263,6 @@ const server =
         req.url ===
           '/'
       ) {
-        let snapshotExists =
-          false;
-
-        try {
-          if (
-            mongoose.connection.db
-          ) {
-            const snapshot =
-              await mongoose.connection.db
-                .collection(
-                  'guildsnapshots',
-                )
-                .findOne({
-                  guildId:
-                    env.DISCORD_GUILD_ID,
-                });
-
-            snapshotExists =
-              Boolean(
-                snapshot,
-              );
-          }
-        } catch {
-          snapshotExists =
-            false;
-        }
-
-
         res.writeHead(
           200,
           {
@@ -324,8 +292,6 @@ const server =
               mongoose.connection
                 .name ??
               null,
-
-            snapshotExists,
           }),
         );
 
@@ -347,21 +313,28 @@ const server =
 server.listen(
   env.PORT,
   '0.0.0.0',
-  () =>
+  () => {
     logger.info(
       `Health server listening on 0.0.0.0:${env.PORT}`,
-    ),
+    );
+  },
 );
 
 
 /* =========================================================
-   START BOT
+   START
    ========================================================= */
 
 async function start() {
+  /*
+   * Connect MongoDB first.
+   */
   await connectDatabase();
 
 
+  /*
+   * Wait until Discord is actually ready.
+   */
   const readyPromise =
     client.isReady()
       ? Promise.resolve()
@@ -369,8 +342,7 @@ async function start() {
           (resolve) => {
             client.once(
               Events.ClientReady,
-              () =>
-                resolve(),
+              resolve,
             );
           },
         );
@@ -385,12 +357,24 @@ async function start() {
 
 
   logger.info(
-    'Discord connection ready - starting forced dashboard sync',
+    'Discord connection ready - starting dashboard services',
   );
 
 
   /*
-   * FIRST SYNC IMMEDIATELY.
+   * IMPORTANT:
+   *
+   * Start the dashboard action processor DIRECTLY.
+   *
+   * This is what was missing.
+   */
+  startDashboardActionProcessor(
+    client,
+  );
+
+
+  /*
+   * Initial Discord -> dashboard snapshot.
    */
   try {
     await syncDashboardSnapshot();
@@ -401,16 +385,14 @@ async function start() {
         error:
           error?.stack ??
           error?.message ??
-          String(
-            error,
-          ),
+          String(error),
       },
     );
   }
 
 
   /*
-   * KEEP IT UPDATED EVERY 60 SECONDS.
+   * Keep roles/channels updated.
    */
   const snapshotTimer =
     setInterval(
@@ -424,9 +406,7 @@ async function start() {
               error:
                 error?.stack ??
                 error?.message ??
-                String(
-                  error,
-                ),
+                String(error),
             },
           );
         }
@@ -451,15 +431,19 @@ async function shutdown(
     `Received ${signal}; shutting down`,
   );
 
+
   server.close();
 
+
   client.destroy();
+
 
   await mongoose
     .disconnect()
     .catch(
       () => null,
     );
+
 
   process.exit(
     0,
@@ -487,17 +471,16 @@ process.on(
 
 process.on(
   'unhandledRejection',
-  (error) =>
+  (error) => {
     logger.error(
       'Unhandled rejection',
       {
         error:
           error?.stack ??
-          String(
-            error,
-          ),
+          String(error),
       },
-    ),
+    );
+  },
 );
 
 
@@ -512,6 +495,7 @@ process.on(
           error.message,
       },
     );
+
 
     process.exit(
       1,
@@ -530,6 +514,7 @@ start().catch(
           error.message,
       },
     );
+
 
     process.exit(
       1,
