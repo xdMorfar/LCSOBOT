@@ -11,6 +11,10 @@ import {
 } from '../database/models/Deputy.js';
 
 import {
+  Promotion,
+} from '../database/models/Promotion.js';
+
+import {
   LOA,
 } from '../database/models/LOA.js';
 
@@ -33,14 +37,6 @@ import {
 import {
   Guideline,
 } from '../database/models/Guideline.js';
-
-import {
-  RANK_LEVEL,
-} from '../config/constants.js';
-
-import {
-  changeRank,
-} from './rankService.js';
 
 import {
   getSettings,
@@ -75,6 +71,10 @@ import {
 } from './ticketService.js';
 
 
+/* =========================================================
+   HELPERS
+   ========================================================= */
+
 function actorLabel(
   action,
 ) {
@@ -88,14 +88,17 @@ function actorLabel(
 
   if (
     /^\d{15,22}$/.test(
-      action.actorId,
+      String(
+        action.actorId ?? '',
+      ),
     )
   ) {
     return `<@${action.actorId}>`;
   }
 
   return String(
-    action.actorId,
+    action.actorId ??
+      'Unknown',
   );
 }
 
@@ -114,7 +117,8 @@ function splitText(
     limit
   ) {
     return [
-      remaining,
+      remaining ||
+        'No content provided.',
     ];
   }
 
@@ -165,19 +169,73 @@ function splitText(
 }
 
 
+function configuredRankIds(
+  settings,
+) {
+  if (
+    Array.isArray(
+      settings.rankRoleIds,
+    ) &&
+    settings.rankRoleIds.length
+  ) {
+    return [
+      ...settings.rankRoleIds,
+    ];
+  }
+
+  if (
+    settings.rankRoles
+  ) {
+    if (
+      typeof settings.rankRoles.values ===
+      'function'
+    ) {
+      return [
+        ...settings.rankRoles.values(),
+      ].filter(Boolean);
+    }
+
+    return Object.values(
+      settings.rankRoles,
+    ).filter(Boolean);
+  }
+
+  return [];
+}
+
+
 /* =========================================================
-   GUIDELINE DISCORD EMBED
+   GUIDELINE EMBED
    ========================================================= */
 
 async function postGuidelineEmbed(
   client,
   action,
 ) {
+  const guidelineId =
+    action.payload
+      ?.guidelineId;
+
+  const channelId =
+    action.payload
+      ?.channelId;
+
+  if (!guidelineId) {
+    throw new Error(
+      'Guideline ID is missing from dashboard action.',
+    );
+  }
+
+  if (!channelId) {
+    throw new Error(
+      'Discord channel ID is missing from dashboard action.',
+    );
+  }
+
   const guideline =
     await Guideline.findOne({
       _id:
-        action.payload
-          .guidelineId,
+        guidelineId,
 
       guildId:
         action.guildId,
@@ -185,7 +243,7 @@ async function postGuidelineEmbed(
 
   if (!guideline) {
     throw new Error(
-      'Guideline not found.',
+      'Guideline not found in MongoDB.',
     );
   }
 
@@ -197,8 +255,7 @@ async function postGuidelineEmbed(
   const channel =
     await guild.channels
       .fetch(
-        action.payload
-          .channelId,
+        channelId,
       )
       .catch(
         () => null,
@@ -209,11 +266,11 @@ async function postGuidelineEmbed(
     !channel.isTextBased()
   ) {
     throw new Error(
-      'Discord channel not found or is not a text channel.',
+      'Selected Discord channel does not exist or is not a text channel.',
     );
   }
 
-  const contentParts =
+  const parts =
     splitText(
       guideline.content,
     );
@@ -224,7 +281,7 @@ async function postGuidelineEmbed(
   for (
     let index = 0;
     index <
-    contentParts.length;
+    parts.length;
     index++
   ) {
     const embed =
@@ -234,15 +291,27 @@ async function postGuidelineEmbed(
         )
         .setTitle(
           index === 0
-            ? guideline.title
-            : `${guideline.title} • Continued`,
+            ? String(
+                guideline.title ??
+                  'LCSO Guideline',
+              ).slice(
+                0,
+                256,
+              )
+            : `${String(
+                guideline.title ??
+                  'LCSO Guideline',
+              ).slice(
+                0,
+                230,
+              )} • Continued`,
         )
         .setDescription(
-          contentParts[index],
+          parts[index],
         )
         .setFooter({
           text:
-            "Liberty County Sheriff's Office • ERLC",
+            "Liberty County Sheriff's Office • Springfield Roleplay",
         })
         .setTimestamp();
 
@@ -257,6 +326,9 @@ async function postGuidelineEmbed(
         value:
           String(
             guideline.category,
+          ).slice(
+            0,
+            1024,
           ),
 
         inline:
@@ -299,27 +371,49 @@ async function postGuidelineEmbed(
     }
   }
 
-  guideline.postedChannelId =
-    channel.id;
+  try {
+    guideline.postedChannelId =
+      channel.id;
 
-  guideline.postedMessageId =
-    firstMessage?.id ??
-    null;
+    guideline.postedMessageId =
+      firstMessage?.id ??
+      null;
 
-  await guideline.save();
+    await guideline.save();
+  } catch (error) {
+    logger.warn(
+      'Guideline sent but Discord message metadata could not be saved',
+      {
+        error:
+          error?.message ??
+          String(error),
+      },
+    );
+  }
 
-  await sendLog(
-    guild,
-    'guideline',
+  try {
+    await sendLog(
+      guild,
+      'guideline',
 
-    infoEmbed(
-      'Guideline Published',
+      infoEmbed(
+        'Guideline Published',
 
-      `**${guideline.title}** was published in <#${channel.id}> by **${actorLabel(
-        action,
-      )}**.`,
-    ),
-  );
+        `**${guideline.title}** was published in <#${channel.id}> by **${actorLabel(
+          action,
+        )}**.`,
+      ),
+    );
+  } catch (error) {
+    logger.warn(
+      'Guideline was sent but guideline log could not be sent',
+      {
+        error:
+          error?.message ??
+          String(error),
+      },
+    );
+  }
 
   return {
     guidelineId:
@@ -333,23 +427,45 @@ async function postGuidelineEmbed(
     messageId:
       firstMessage?.id ??
       null,
+
+    messagesSent:
+      parts.length,
   };
 }
 
 
 /* =========================================================
-   RANK CHANGE
+   DYNAMIC DISCORD RANK CHANGE
    ========================================================= */
 
-async function rankChange(
+async function setMemberRankRole(
   client,
   action,
 ) {
+  const deputyId =
+    action.payload
+      ?.deputyId;
+
+  const targetRoleId =
+    action.payload
+      ?.targetRoleId;
+
+  if (!deputyId) {
+    throw new Error(
+      'Deputy ID is missing.',
+    );
+  }
+
+  if (!targetRoleId) {
+    throw new Error(
+      'Target Discord role ID is missing.',
+    );
+  }
+
   const deputy =
     await Deputy.findOne({
       _id:
-        action.payload
-          .deputyId,
+        deputyId,
 
       guildId:
         action.guildId,
@@ -366,77 +482,206 @@ async function rankChange(
       action.guildId,
     );
 
-  const target =
-    action.payload
-      .targetRank;
+  const settings =
+    await getSettings(
+      guild.id,
+    );
 
-  const type =
-    RANK_LEVEL[target] >
-    RANK_LEVEL[
-      deputy.rank
-    ]
-      ? 'Promotion'
-      : 'Demotion';
+  const rankIds =
+    configuredRankIds(
+      settings,
+    );
 
   if (
-    RANK_LEVEL[target] ===
-    RANK_LEVEL[
-      deputy.rank
-    ]
+    !rankIds.includes(
+      targetRoleId,
+    )
   ) {
     throw new Error(
-      'Target rank equals current rank.',
+      'Target Discord role is not configured as an LCSO rank.',
     );
   }
 
-  const from =
-    deputy.rank;
+  const targetRole =
+    await guild.roles
+      .fetch(
+        targetRoleId,
+      )
+      .catch(
+        () => null,
+      );
 
-  const record =
-    await changeRank({
-      guild,
+  if (!targetRole) {
+    throw new Error(
+      'Target Discord rank role no longer exists.',
+    );
+  }
 
-      deputy,
+  const member =
+    await guild.members
+      .fetch(
+        deputy.discordId,
+      )
+      .catch(
+        () => null,
+      );
 
-      targetRank:
-        target,
+  if (!member) {
+    throw new Error(
+      'Deputy is not currently in the Discord server.',
+    );
+  }
 
-      actorId:
-        action.actorId,
+  const oldRoleId =
+    deputy.rankRoleId ??
+    action.payload
+      ?.previousRoleId ??
+    null;
+
+  const oldRole =
+    oldRoleId
+      ? await guild.roles
+          .fetch(
+            oldRoleId,
+          )
+          .catch(
+            () => null,
+          )
+      : null;
+
+  const fromRank =
+    deputy.rankName ??
+    deputy.rank ??
+    oldRole?.name ??
+    'Unassigned';
+
+  let changeType =
+    'Rank Change';
+
+  if (oldRole) {
+    if (
+      targetRole.position >
+      oldRole.position
+    ) {
+      changeType =
+        'Promotion';
+    } else if (
+      targetRole.position <
+      oldRole.position
+    ) {
+      changeType =
+        'Demotion';
+    }
+  }
+
+  const rolesToRemove =
+    rankIds.filter(
+      (id) =>
+        id !==
+          targetRoleId &&
+        member.roles.cache.has(
+          id,
+        ),
+    );
+
+  if (
+    rolesToRemove.length
+  ) {
+    await member.roles.remove(
+      rolesToRemove,
+      `LCSO ${changeType}`,
+    );
+  }
+
+  if (
+    !member.roles.cache.has(
+      targetRoleId,
+    )
+  ) {
+    await member.roles.add(
+      targetRoleId,
+      `LCSO ${changeType}`,
+    );
+  }
+
+  deputy.rankRoleId =
+    targetRole.id;
+
+  deputy.rankName =
+    targetRole.name;
+
+  deputy.rank =
+    targetRole.name;
+
+  await deputy.save();
+
+  const promotion =
+    await Promotion.create({
+      guildId:
+        guild.id,
+
+      deputyId:
+        deputy._id,
+
+      discordId:
+        deputy.discordId,
+
+      type:
+        changeType,
+
+      fromRank,
+
+      toRank:
+        targetRole.name,
+
+      fromRoleId:
+        oldRole?.id ??
+        oldRoleId ??
+        null,
+
+      toRoleId:
+        targetRole.id,
 
       reason:
         action.payload
-          .reason ||
-        'Dashboard rank change',
+          ?.reason ||
+        'Rank changed from Command Center',
 
-      type,
+      status:
+        'Completed',
 
-      overrideRequirements:
-        Boolean(
-          action.payload
-            .overrideRequirements,
-        ),
+      requestedBy:
+        action.actorId,
+
+      reviewedBy:
+        action.actorId,
+
+      reviewedAt:
+        new Date(),
+
+      actionedBy:
+        action.actorId,
     });
 
   const embed =
     successEmbed(
-      `${type} • ${target}`,
+      `${changeType} • ${targetRole.name}`,
 
-      `<@${deputy.discordId}> has been ${
-        type ===
-        'Promotion'
-          ? 'promoted'
-          : 'demoted'
-      } from **${from}** to **${target}**.`,
+      `<@${deputy.discordId}> changed from **${fromRank}** to **${targetRole.name}**.`,
     ).addFields(
       {
         name:
           'Reason',
 
         value:
-          action.payload
-            .reason ||
-          'No reason provided',
+          String(
+            action.payload
+              ?.reason ||
+              'No reason provided',
+          ).slice(
+            0,
+            1024,
+          ),
       },
 
       {
@@ -450,15 +695,10 @@ async function rankChange(
       },
     );
 
-  const settings =
-    await getSettings(
-      guild.id,
-    );
-
   if (
     settings.promotionChannelId
   ) {
-    const channel =
+    const promotionChannel =
       await guild.channels
         .fetch(
           settings
@@ -469,9 +709,9 @@ async function rankChange(
         );
 
     if (
-      channel?.isTextBased()
+      promotionChannel?.isTextBased()
     ) {
-      await channel.send({
+      await promotionChannel.send({
         embeds: [
           embed,
         ],
@@ -479,17 +719,39 @@ async function rankChange(
     }
   }
 
-  await sendLog(
-    guild,
-    'promotion',
-    embed,
-  );
+  try {
+    await sendLog(
+      guild,
+      'promotion',
+      embed,
+    );
+  } catch (error) {
+    logger.warn(
+      'Rank changed but promotion log could not be sent',
+      {
+        error:
+          error?.message ??
+          String(error),
+      },
+    );
+  }
 
   return {
     promotionId:
       String(
-        record._id,
+        promotion._id,
       ),
+
+    type:
+      changeType,
+
+    fromRank,
+
+    toRank:
+      targetRole.name,
+
+    roleId:
+      targetRole.id,
   };
 }
 
@@ -505,7 +767,8 @@ async function loaReview(
   const loa =
     await LOA.findOne({
       _id:
-        action.payload.loaId,
+        action.payload
+          ?.loaId,
 
       guildId:
         action.guildId,
@@ -576,7 +839,9 @@ async function loaReview(
 
     await Promise.all([
       loa.save(),
-      deputy?.save(),
+      deputy
+        ? deputy.save()
+        : Promise.resolve(),
     ]);
   }
 
@@ -596,7 +861,13 @@ async function loaReview(
           'Reason',
 
         value:
-          loa.reason,
+          String(
+            loa.reason ??
+              'No reason provided',
+          ).slice(
+            0,
+            1024,
+          ),
       },
 
       {
@@ -679,11 +950,22 @@ async function loaReview(
     }
   }
 
-  await sendLog(
-    guild,
-    'loa',
-    embed,
-  );
+  try {
+    await sendLog(
+      guild,
+      'loa',
+      embed,
+    );
+  } catch (error) {
+    logger.warn(
+      'LOA processed but LOA log failed',
+      {
+        error:
+          error?.message ??
+          String(error),
+      },
+    );
+  }
 
   return {
     loaId:
@@ -709,7 +991,7 @@ async function trainingAction(
     await Training.findOne({
       _id:
         action.payload
-          .trainingId,
+          ?.trainingId,
 
       guildId:
         action.guildId,
@@ -745,16 +1027,27 @@ async function trainingAction(
     action.type !==
     'POST_TRAINING_REQUEST'
   ) {
-    await sendLog(
-      guild,
-      'training',
+    try {
+      await sendLog(
+        guild,
+        'training',
 
-      infoEmbed(
-        'Training Updated',
+        infoEmbed(
+          'Training Updated',
 
-        `<@${training.traineeDiscordId}> • **${training.type}** • ${training.status}`,
-      ),
-    );
+          `<@${training.traineeDiscordId}> • **${training.type}** • ${training.status}`,
+        ),
+      );
+    } catch (error) {
+      logger.warn(
+        'Training updated but training log failed',
+        {
+          error:
+            error?.message ??
+            String(error),
+        },
+      );
+    }
   }
 
   return {
@@ -781,7 +1074,7 @@ async function infractionNotify(
     await Infraction.findOne({
       _id:
         action.payload
-          .infractionId,
+          ?.infractionId,
 
       guildId:
         action.guildId,
@@ -810,7 +1103,8 @@ async function infractionNotify(
 
         value:
           String(
-            infraction.points,
+            infraction.points ??
+              0,
           ),
 
         inline:
@@ -822,7 +1116,13 @@ async function infractionNotify(
           'Reason',
 
         value:
-          infraction.reason,
+          String(
+            infraction.reason ??
+              'No reason provided',
+          ).slice(
+            0,
+            1024,
+          ),
       },
 
       {
@@ -863,7 +1163,7 @@ async function applicationReview(
     await Application.findOne({
       _id:
         action.payload
-          .applicationId,
+          ?.applicationId,
 
       guildId:
         action.guildId,
@@ -891,42 +1191,14 @@ async function applicationReview(
     accepted:
       Boolean(
         action.payload
-          .accepted,
+          ?.accepted,
       ),
 
     reason:
       action.payload
-        .reason ||
+        ?.reason ||
       'Reviewed from Command Center',
   });
-
-  const embed =
-    (
-      action.payload
-        .accepted
-        ? successEmbed
-        : warningEmbed
-    )(
-      action.payload
-        .accepted
-        ? 'Application Accepted'
-        : 'Application Denied',
-
-      `<@${application.applicantId}>'s application was **${
-        action.payload
-          .accepted
-          ? 'accepted'
-          : 'denied'
-      }** by **${actorLabel(
-        action,
-      )}**.`,
-    );
-
-  await sendLog(
-    guild,
-    'application',
-    embed,
-  );
 
   return {
     applicationId:
@@ -941,13 +1213,23 @@ async function applicationReview(
 
 
 /* =========================================================
-   TICKETS
+   CREATE TICKET
    ========================================================= */
 
 async function createTicketAction(
   client,
   action,
 ) {
+  const ownerId =
+    action.payload
+      ?.ownerId;
+
+  if (!ownerId) {
+    throw new Error(
+      'Ticket owner ID is missing.',
+    );
+  }
+
   const guild =
     await client.guilds.fetch(
       action.guildId,
@@ -956,8 +1238,7 @@ async function createTicketAction(
   const member =
     await guild.members
       .fetch(
-        action.payload
-          .ownerId,
+        ownerId,
       )
       .catch(
         () => null,
@@ -965,7 +1246,7 @@ async function createTicketAction(
 
   if (!member) {
     throw new Error(
-      'Ticket owner is not in the server.',
+      'Ticket owner is not in the Discord server.',
     );
   }
 
@@ -977,11 +1258,12 @@ async function createTicketAction(
         member,
 
       type:
-        action.payload.type,
+        action.payload
+          ?.type,
 
       subject:
         action.payload
-          .subject ||
+          ?.subject ||
         '',
     });
 
@@ -1002,6 +1284,10 @@ async function createTicketAction(
 }
 
 
+/* =========================================================
+   CLOSE TICKET
+   ========================================================= */
+
 async function closeTicketAction(
   client,
   action,
@@ -1010,7 +1296,7 @@ async function closeTicketAction(
     await Ticket.findOne({
       _id:
         action.payload
-          .ticketId,
+          ?.ticketId,
 
       guildId:
         action.guildId,
@@ -1040,7 +1326,8 @@ async function closeTicketAction(
       );
 
   if (
-    !channel?.isTextBased()
+    !channel ||
+    !channel.isTextBased()
   ) {
     throw new Error(
       'Ticket channel not found.',
@@ -1049,7 +1336,7 @@ async function closeTicketAction(
 
   ticket.closeReason =
     action.payload
-      .reason ||
+      ?.reason ||
     'Closed from Command Center';
 
   await ticket.save();
@@ -1065,19 +1352,20 @@ async function closeTicketAction(
 
       reason:
         action.payload
-          .reason ||
+          ?.reason ||
         'Closed from Command Center',
     });
 
   setTimeout(
-    () =>
+    () => {
       channel
         .delete(
           'LCSO ticket closed from dashboard',
         )
         .catch(
           () => null,
-        ),
+        );
+    },
 
     4000,
   ).unref();
@@ -1109,8 +1397,8 @@ async function execute(
         action,
       );
 
-    case 'RANK_CHANGE':
-      return rankChange(
+    case 'SET_MEMBER_RANK_ROLE':
+      return setMemberRankRole(
         client,
         action,
       );
@@ -1122,9 +1410,7 @@ async function execute(
       );
 
     case 'POST_TRAINING_REQUEST':
-
     case 'TRAINING_REVIEW':
-
     case 'TRAINING_UPDATE':
       return trainingAction(
         client,
@@ -1164,7 +1450,7 @@ async function execute(
 
 
 /* =========================================================
-   PROCESS QUEUE
+   PROCESS ONE ACTION
    ========================================================= */
 
 export async function processNextDashboardAction(
@@ -1181,6 +1467,9 @@ export async function processNextDashboardAction(
         $set: {
           status:
             'Processing',
+
+          updatedAt:
+            new Date(),
         },
 
         $inc: {
@@ -1204,6 +1493,22 @@ export async function processNextDashboardAction(
     return false;
   }
 
+  logger.info(
+    'Processing dashboard action',
+    {
+      actionId:
+        String(
+          action._id,
+        ),
+
+      type:
+        action.type,
+
+      guildId:
+        action.guildId,
+    },
+  );
+
   try {
     const result =
       await execute(
@@ -1223,15 +1528,38 @@ export async function processNextDashboardAction(
     action.processedAt =
       new Date();
 
+    action.updatedAt =
+      new Date();
+
     await action.save();
+
+    logger.info(
+      'Dashboard action completed',
+      {
+        actionId:
+          String(
+            action._id,
+          ),
+
+        type:
+          action.type,
+      },
+    );
   } catch (error) {
+    const message =
+      error?.message ??
+      String(error);
+
     action.error =
-      error.message;
+      message;
 
     action.status =
       action.attempts >= 3
         ? 'Failed'
         : 'Pending';
+
+    action.updatedAt =
+      new Date();
 
     await action.save();
 
@@ -1249,9 +1577,12 @@ export async function processNextDashboardAction(
         attempts:
           action.attempts,
 
+        status:
+          action.status,
+
         error:
-          error.stack ||
-          error.message,
+          error?.stack ??
+          message,
       },
     );
   }
@@ -1261,14 +1592,86 @@ export async function processNextDashboardAction(
 
 
 /* =========================================================
-   ACTION LOOP
+   RECOVER ACTIONS AFTER A BOT CRASH
+   ========================================================= */
+
+async function recoverStaleActions() {
+  const cutoff =
+    new Date(
+      Date.now() -
+        5 *
+          60 *
+          1000,
+    );
+
+  const result =
+    await DashboardAction.updateMany(
+      {
+        status:
+          'Processing',
+
+        updatedAt: {
+          $lt:
+            cutoff,
+        },
+      },
+
+      {
+        $set: {
+          status:
+            'Pending',
+
+          error:
+            'Recovered after bot restart.',
+
+          updatedAt:
+            new Date(),
+        },
+      },
+    );
+
+  if (
+    result.modifiedCount >
+    0
+  ) {
+    logger.info(
+      'Recovered stale dashboard actions',
+      {
+        count:
+          result.modifiedCount,
+      },
+    );
+  }
+}
+
+
+/* =========================================================
+   ACTION PROCESSOR
    ========================================================= */
 
 export function startDashboardActionProcessor(
   client,
 ) {
+  logger.info(
+    'Dashboard action processor started',
+  );
+
   let busy =
     false;
+
+  recoverStaleActions().catch(
+    (error) => {
+      logger.error(
+        'Failed to recover stale dashboard actions',
+        {
+          error:
+            error?.stack ??
+            error?.message ??
+            String(error),
+        },
+      );
+    },
+  );
 
   const tick =
     async () => {
@@ -1282,7 +1685,7 @@ export function startDashboardActionProcessor(
       try {
         for (
           let i = 0;
-          i < 5;
+          i < 10;
           i++
         ) {
           const processed =
@@ -1294,6 +1697,16 @@ export function startDashboardActionProcessor(
             break;
           }
         }
+      } catch (error) {
+        logger.error(
+          'Dashboard action queue tick failed',
+          {
+            error:
+              error?.stack ??
+              error?.message ??
+              String(error),
+          },
+        );
       } finally {
         busy =
           false;
@@ -1304,18 +1717,7 @@ export function startDashboardActionProcessor(
 
   const timer =
     setInterval(
-      () =>
-        tick().catch(
-          (error) =>
-            logger.error(
-              'Action queue loop failed',
-              {
-                error:
-                  error.message,
-              },
-            ),
-        ),
-
+      tick,
       3000,
     );
 
