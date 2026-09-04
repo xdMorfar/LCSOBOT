@@ -1,4 +1,8 @@
 import {
+  ActionRowBuilder,
+  AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   EmbedBuilder,
 } from 'discord.js';
 
@@ -10,17 +14,22 @@ import {
 
 
 /* =========================================================
-   DATABASE HELPERS
+   DATABASE
    ========================================================= */
 
 function db() {
-  if (!mongoose.connection.db) {
+  if (
+    !mongoose.connection
+      .db
+  ) {
     throw new Error(
       'MongoDB is not connected.',
     );
   }
 
-  return mongoose.connection.db;
+  return mongoose
+    .connection
+    .db;
 }
 
 
@@ -37,9 +46,11 @@ function objectId(
   value,
 ) {
   if (
-    !mongoose.Types.ObjectId.isValid(
-      value,
-    )
+    !mongoose.Types
+      .ObjectId
+      .isValid(
+        value,
+      )
   ) {
     throw new Error(
       `Invalid MongoDB ID: ${value}`,
@@ -52,33 +63,15 @@ function objectId(
 }
 
 
-function actorLabel(
-  action,
-) {
-  if (
-    action.payload?.actorName
-  ) {
-    return String(
-      action.payload.actorName,
-    );
-  }
-
-  return String(
-    action.actorId ??
-      'Unknown',
-  );
-}
-
-
 function splitText(
   value,
   max = 3900,
 ) {
   let text =
     String(
-      value ??
-        '',
+      value ?? '',
     ).trim();
+
 
   if (!text) {
     return [
@@ -86,7 +79,10 @@ function splitText(
     ];
   }
 
-  const parts = [];
+
+  const parts =
+    [];
+
 
   while (
     text.length >
@@ -98,6 +94,7 @@ function splitText(
         max,
       );
 
+
     if (
       position <
       max * 0.5
@@ -106,12 +103,14 @@ function splitText(
         max;
     }
 
+
     parts.push(
       text.slice(
         0,
         position,
       ),
     );
+
 
     text =
       text
@@ -121,19 +120,190 @@ function splitText(
         .trimStart();
   }
 
+
   if (text) {
     parts.push(
       text,
     );
   }
 
+
   return parts;
 }
 
 
 /* =========================================================
-   GUIDELINE EMBED
+   GUIDELINE
    ========================================================= */
+
+function buildGuidelineButtons(
+  guideline,
+) {
+  if (
+    !Array.isArray(
+      guideline.links,
+    ) ||
+    !guideline
+      .links
+      .length
+  ) {
+    return [];
+  }
+
+
+  const row =
+    new ActionRowBuilder();
+
+
+  for (
+    const link of
+      guideline.links.slice(
+        0,
+        5,
+      )
+  ) {
+    if (
+      !link?.label ||
+      !link?.url
+    ) {
+      continue;
+    }
+
+
+    try {
+      const url =
+        new URL(
+          String(
+            link.url,
+          ),
+        );
+
+
+      if (
+        ![
+          'http:',
+          'https:',
+        ].includes(
+          url.protocol,
+        )
+      ) {
+        continue;
+      }
+
+
+      row.addComponents(
+        new ButtonBuilder()
+          .setStyle(
+            ButtonStyle.Link,
+          )
+          .setLabel(
+            String(
+              link.label,
+            ).slice(
+              0,
+              80,
+            ),
+          )
+          .setURL(
+            url.toString(),
+          ),
+      );
+    } catch {
+      // Ignore broken old URL.
+    }
+  }
+
+
+  if (
+    !row.components.length
+  ) {
+    return [];
+  }
+
+
+  return [
+    row,
+  ];
+}
+
+
+function buildUploadedImage(
+  action,
+) {
+  const data =
+    action.payload
+      ?.imageDataUrl;
+
+
+  if (
+    typeof data !==
+    'string'
+  ) {
+    return null;
+  }
+
+
+  const match =
+    data.match(
+      /^data:image\/(png|jpeg|webp|gif);base64,(.+)$/i,
+    );
+
+
+  if (!match) {
+    return null;
+  }
+
+
+  const mime =
+    match[1]
+      .toLowerCase();
+
+
+  const extension =
+    mime ===
+    'jpeg'
+      ? 'jpg'
+      : mime;
+
+
+  const buffer =
+    Buffer.from(
+      match[2],
+      'base64',
+    );
+
+
+  if (
+    !buffer.length ||
+    buffer.length >
+      8 *
+        1024 *
+        1024
+  ) {
+    throw new Error(
+      'Uploaded guideline image is invalid or too large.',
+    );
+  }
+
+
+  const filename =
+    `lcso-guideline.${extension}`;
+
+
+  return {
+    filename,
+
+    attachment:
+      new AttachmentBuilder(
+        buffer,
+        {
+          name:
+            filename,
+        },
+      ),
+  };
+}
+
 
 async function sendGuidelineEmbed(
   client,
@@ -146,6 +316,7 @@ async function sendGuidelineEmbed(
         '',
     );
 
+
   const channelId =
     String(
       action.payload
@@ -153,15 +324,21 @@ async function sendGuidelineEmbed(
         '',
     );
 
-  if (!guidelineId) {
+
+  if (
+    !guidelineId
+  ) {
     throw new Error(
-      'Guideline ID missing.',
+      'Guideline ID is missing.',
     );
   }
 
-  if (!channelId) {
+
+  if (
+    !channelId
+  ) {
     throw new Error(
-      'Discord channel ID missing.',
+      'Discord channel ID is missing.',
     );
   }
 
@@ -180,9 +357,11 @@ async function sendGuidelineEmbed(
     });
 
 
-  if (!guideline) {
+  if (
+    !guideline
+  ) {
     throw new Error(
-      'Guideline could not be found in MongoDB.',
+      'Guideline was not found.',
     );
   }
 
@@ -192,9 +371,10 @@ async function sendGuidelineEmbed(
       action.guildId,
     );
 
+
   if (!guild) {
     throw new Error(
-      'Discord server is not available in bot cache.',
+      'Discord server is unavailable.',
     );
   }
 
@@ -212,7 +392,8 @@ async function sendGuidelineEmbed(
           channelId,
         )
         .catch(
-          () => null,
+          () =>
+            null,
         );
   }
 
@@ -222,7 +403,7 @@ async function sendGuidelineEmbed(
     !channel.isTextBased()
   ) {
     throw new Error(
-      'Selected Discord channel was not found or is not a text channel.',
+      'Selected Discord channel is unavailable.',
     );
   }
 
@@ -233,18 +414,31 @@ async function sendGuidelineEmbed(
     );
 
 
+  const components =
+    buildGuidelineButtons(
+      guideline,
+    );
+
+
+  const upload =
+    buildUploadedImage(
+      action,
+    );
+
+
   let firstMessageId =
     null;
 
 
   for (
-    let i = 0;
-    i <
+    let index = 0;
+    index <
     parts.length;
-    i++
+    index++
   ) {
     const title =
-      i === 0
+      index ===
+      0
         ? String(
             guideline.title ??
               'LCSO Guideline',
@@ -267,7 +461,9 @@ async function sendGuidelineEmbed(
           ),
         )
         .setDescription(
-          parts[i],
+          parts[
+            index
+          ],
         )
         .setFooter({
           text:
@@ -277,7 +473,8 @@ async function sendGuidelineEmbed(
 
 
     if (
-      i === 0 &&
+      index ===
+        0 &&
       guideline.category
     ) {
       embed.addFields({
@@ -299,7 +496,8 @@ async function sendGuidelineEmbed(
 
 
     if (
-      i === 0 &&
+      index ===
+        0 &&
       guideline.summary
     ) {
       embed.addFields({
@@ -317,19 +515,84 @@ async function sendGuidelineEmbed(
     }
 
 
+    const files =
+      [];
+
+
+    if (
+      index ===
+        0 &&
+      upload
+    ) {
+      files.push(
+        upload
+          .attachment,
+      );
+
+
+      embed.setImage(
+        `attachment://${upload.filename}`,
+      );
+    } else if (
+      index ===
+        0 &&
+      guideline.imageUrl
+    ) {
+      try {
+        const url =
+          new URL(
+            String(
+              guideline.imageUrl,
+            ),
+          );
+
+
+        if (
+          [
+            'http:',
+            'https:',
+          ].includes(
+            url.protocol,
+          )
+        ) {
+          embed.setImage(
+            url.toString(),
+          );
+        }
+      } catch {
+        // Ignore invalid old image.
+      }
+    }
+
+
     const message =
       await channel.send({
         embeds: [
           embed,
         ],
 
+        components:
+          index ===
+          0
+            ? components
+            : [],
+
+        files:
+          index ===
+          0
+            ? files
+            : [],
+
         allowedMentions: {
-          parse: [],
+          parse:
+            [],
         },
       });
 
 
-    if (!firstMessageId) {
+    if (
+      !firstMessageId
+    ) {
       firstMessageId =
         message.id;
     }
@@ -352,6 +615,9 @@ async function sendGuidelineEmbed(
         postedMessageId:
           firstMessageId,
 
+        lastPublishedAt:
+          new Date(),
+
         updatedAt:
           new Date(),
       },
@@ -362,7 +628,7 @@ async function sendGuidelineEmbed(
   logger.info(
     'Guideline embed sent',
     {
-      title:
+      guideline:
         guideline.title,
 
       channelId:
@@ -390,7 +656,7 @@ async function sendGuidelineEmbed(
 
 
 /* =========================================================
-   DISCORD RANK CHANGE
+   RANK ROLE
    ========================================================= */
 
 async function setMemberRankRole(
@@ -403,6 +669,7 @@ async function setMemberRankRole(
         ?.deputyId ??
         '',
     );
+
 
   const targetRoleId =
     String(
@@ -457,7 +724,8 @@ async function setMemberRankRole(
       settings
         ?.rankRoleIds,
     )
-      ? settings.rankRoleIds
+      ? settings
+          .rankRoleIds
       : [];
 
 
@@ -480,7 +748,7 @@ async function setMemberRankRole(
 
   if (!guild) {
     throw new Error(
-      'Discord guild is not available.',
+      'Discord guild is unavailable.',
     );
   }
 
@@ -491,7 +759,8 @@ async function setMemberRankRole(
         deputy.discordId,
       )
       .catch(
-        () => null,
+        () =>
+          null,
       );
 
 
@@ -534,16 +803,16 @@ async function setMemberRankRole(
     'Rank Change';
 
 
-  if (currentRole) {
+  if (
+    currentRole
+  ) {
     if (
       targetRole.position >
       currentRole.position
     ) {
       type =
         'Promotion';
-    }
-
-    if (
+    } else if (
       targetRole.position <
       currentRole.position
     ) {
@@ -555,7 +824,9 @@ async function setMemberRankRole(
 
   const remove =
     rankRoleIds.filter(
-      (roleId) =>
+      (
+        roleId,
+      ) =>
         roleId !==
           targetRoleId &&
         member.roles.cache.has(
@@ -564,7 +835,9 @@ async function setMemberRankRole(
     );
 
 
-  if (remove.length) {
+  if (
+    remove.length
+  ) {
     await member.roles.remove(
       remove,
       `LCSO ${type}`,
@@ -689,7 +962,7 @@ async function setMemberRankRole(
 
 
 /* =========================================================
-   OTHER EXISTING ACTIONS
+   OPTIONAL LEGACY ACTIONS
    ========================================================= */
 
 async function runLegacyAction(
@@ -699,20 +972,16 @@ async function runLegacyAction(
   switch (
     action.type
   ) {
-    /*
-     * These use dynamic imports.
-     *
-     * Therefore a missing optional service
-     * will NOT crash the entire bot on startup.
-     */
-
     case 'POST_TRAINING_REQUEST':
+
     case 'TRAINING_REVIEW':
+
     case 'TRAINING_UPDATE': {
       const module =
         await import(
           './trainingService.js'
         );
+
 
       const training =
         await collection(
@@ -720,7 +989,8 @@ async function runLegacyAction(
         ).findOne({
           _id:
             objectId(
-              action.payload
+              action
+                .payload
                 .trainingId,
             ),
 
@@ -729,7 +999,9 @@ async function runLegacyAction(
         });
 
 
-      if (!training) {
+      if (
+        !training
+      ) {
         throw new Error(
           'Training not found.',
         );
@@ -744,7 +1016,7 @@ async function runLegacyAction(
 
       if (!guild) {
         throw new Error(
-          'Guild not found.',
+          'Discord guild not found.',
         );
       }
 
@@ -753,15 +1025,17 @@ async function runLegacyAction(
         action.type ===
         'POST_TRAINING_REQUEST'
       ) {
-        await module.postTrainingRequest(
-          guild,
-          training,
-        );
+        await module
+          .postTrainingRequest(
+            guild,
+            training,
+          );
       } else {
-        await module.updateTrainingMessage(
-          guild,
-          training,
-        );
+        await module
+          .updateTrainingMessage(
+            guild,
+            training,
+          );
       }
 
 
@@ -781,16 +1055,17 @@ async function runLegacyAction(
         );
 
 
-      const ApplicationModule =
+      const Model =
         await import(
           '../database/models/Application.js'
         );
 
 
       const application =
-        await ApplicationModule.Application.findOne({
+        await Model.Application.findOne({
           _id:
-            action.payload
+            action
+              .payload
               .applicationId,
 
           guildId:
@@ -798,7 +1073,9 @@ async function runLegacyAction(
         });
 
 
-      if (!application) {
+      if (
+        !application
+      ) {
         throw new Error(
           'Application not found.',
         );
@@ -811,25 +1088,28 @@ async function runLegacyAction(
         );
 
 
-      await module.reviewApplication({
-        guild,
+      await module
+        .reviewApplication({
+          guild,
 
-        application,
+          application,
 
-        reviewerId:
-          action.actorId,
+          reviewerId:
+            action.actorId,
 
-        accepted:
-          Boolean(
-            action.payload
-              .accepted,
-          ),
+          accepted:
+            Boolean(
+              action
+                .payload
+                .accepted,
+            ),
 
-        reason:
-          action.payload
-            .reason ||
-          'Reviewed from dashboard',
-      });
+          reason:
+            action
+              .payload
+              .reason ??
+            'Reviewed from dashboard',
+        });
 
 
       return {
@@ -854,14 +1134,23 @@ async function runLegacyAction(
         );
 
 
+      if (!guild) {
+        throw new Error(
+          'Discord guild not found.',
+        );
+      }
+
+
       const member =
         await guild.members
           .fetch(
-            action.payload
+            action
+              .payload
               .ownerId,
           )
           .catch(
-            () => null,
+            () =>
+              null,
           );
 
 
@@ -880,11 +1169,13 @@ async function runLegacyAction(
             member,
 
           type:
-            action.payload
+            action
+              .payload
               .type,
 
           subject:
-            action.payload
+            action
+              .payload
               .subject ??
             '',
         });
@@ -893,11 +1184,15 @@ async function runLegacyAction(
       return {
         ticketId:
           String(
-            result.ticket._id,
+            result
+              .ticket
+              ._id,
           ),
 
         channelId:
-          result.channel.id,
+          result
+            .channel
+            .id,
       };
     }
 
@@ -911,7 +1206,7 @@ async function runLegacyAction(
 
 
 /* =========================================================
-   ACTION ROUTER
+   ROUTER
    ========================================================= */
 
 async function execute(
@@ -945,15 +1240,12 @@ async function execute(
 
 
 /* =========================================================
-   PROCESS ACTION
+   PROCESS QUEUE
    ========================================================= */
 
 export async function processNextDashboardAction(
   client,
 ) {
-  /*
-   * Read oldest pending action.
-   */
   const action =
     await collection(
       'dashboardactions',
@@ -977,9 +1269,6 @@ export async function processNextDashboardAction(
   }
 
 
-  /*
-   * Claim it.
-   */
   const claimed =
     await collection(
       'dashboardactions',
@@ -1016,9 +1305,6 @@ export async function processNextDashboardAction(
     return true;
   }
 
-
-  action.status =
-    'Processing';
 
   action.attempts =
     Number(
@@ -1084,13 +1370,15 @@ export async function processNextDashboardAction(
         actionId:
           String(
             action._id,
-        ),
+          ),
 
         type:
           action.type,
       },
     );
-  } catch (error) {
+  } catch (
+    error
+  ) {
     const message =
       error?.message ??
       String(error);
@@ -1132,7 +1420,7 @@ export async function processNextDashboardAction(
         actionId:
           String(
             action._id,
-        ),
+          ),
 
         type:
           action.type,
@@ -1172,7 +1460,9 @@ export function startDashboardActionProcessor(
 
   const tick =
     async () => {
-      if (running) {
+      if (
+        running
+      ) {
         return;
       }
 
@@ -1193,18 +1483,24 @@ export function startDashboardActionProcessor(
             );
 
 
-          if (!processed) {
+          if (
+            !processed
+          ) {
             break;
           }
         }
-      } catch (error) {
+      } catch (
+        error
+      ) {
         logger.error(
           'Dashboard action processor tick failed',
           {
             error:
               error?.stack ??
               error?.message ??
-              String(error),
+              String(
+                error,
+              ),
           },
         );
       } finally {
@@ -1214,15 +1510,9 @@ export function startDashboardActionProcessor(
     };
 
 
-  /*
-   * Process immediately.
-   */
   tick();
 
 
-  /*
-   * Then every three seconds.
-   */
   const timer =
     setInterval(
       tick,
