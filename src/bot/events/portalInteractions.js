@@ -13,37 +13,58 @@ import {
 
 import mongoose from 'mongoose';
 
+function getDb() {
+  const db = mongoose.connection.db;
 
-function db() {
-  return mongoose
-    .connection
-    .db;
+  if (!db) {
+    throw new Error(
+      'MongoDB is not connected.',
+    );
+  }
+
+  return db;
 }
 
+function objectId(value) {
+  if (
+    !mongoose.Types.ObjectId.isValid(
+      String(value),
+    )
+  ) {
+    return null;
+  }
 
-function collection(
-  name,
-) {
-  return db().collection(
-    name,
-  );
-}
-
-
-function objectId(
-  value,
-) {
   return new mongoose.Types.ObjectId(
-    value,
+    String(value),
   );
 }
 
-
-function cleanName(
+function truncate(
   value,
+  length,
 ) {
+  const text = String(
+    value ?? '',
+  );
+
+  if (
+    text.length <= length
+  ) {
+    return text;
+  }
+
+  return `${text.slice(
+    0,
+    Math.max(
+      0,
+      length - 3,
+    ),
+  )}...`;
+}
+
+function safeName(value) {
   return String(
-    value,
+    value || 'user',
   )
     .toLowerCase()
     .replace(
@@ -55,482 +76,1630 @@ function cleanName(
       '-',
     )
     .replace(
-      /^-|-$/g,
+      /^-+|-+$/g,
       '',
     )
-    .slice(
-      0,
-      80,
-    );
+    .slice(0, 40);
 }
 
+function choiceKey(
+  choice,
+  index,
+) {
+  return String(
+    choice?.key ||
+      choice?.value ||
+      choice?.id ||
+      choice?.label ||
+      `option-${index + 1}`,
+  );
+}
 
-function applyImages(
-  embed,
+function findChoice(
+  choices,
+  selected,
+) {
+  return choices.find(
+    (choice, index) =>
+      choiceKey(
+        choice,
+        index,
+      ) === selected,
+  );
+}
+
+function getApplicationChoices(
   panel,
 ) {
-  try {
-    if (
-      panel.thumbnailUrl
-    ) {
-      embed.setThumbnail(
-        panel.thumbnailUrl,
-      );
-    }
-  } catch {}
+  if (
+    Array.isArray(
+      panel?.applications,
+    )
+  ) {
+    return panel.applications;
+  }
 
+  if (
+    Array.isArray(
+      panel?.types,
+    )
+  ) {
+    return panel.types;
+  }
 
-  try {
-    if (
-      panel.bannerUrl
-    ) {
-      embed.setImage(
-        panel.bannerUrl,
-      );
-    }
-  } catch {}
+  if (
+    Array.isArray(
+      panel?.options,
+    )
+  ) {
+    return panel.options;
+  }
 
-
-  return embed;
+  return [];
 }
 
-
-async function canReview(
-  interaction,
+function getTicketChoices(
+  panel,
 ) {
   if (
-    interaction.memberPermissions?.has(
+    Array.isArray(
+      panel?.ticketTypes,
+    )
+  ) {
+    return panel.ticketTypes;
+  }
+
+  if (
+    Array.isArray(
+      panel?.types,
+    )
+  ) {
+    return panel.types;
+  }
+
+  if (
+    Array.isArray(
+      panel?.options,
+    )
+  ) {
+    return panel.options;
+  }
+
+  return [];
+}
+
+function buildApplicationModal(
+  draft,
+  page,
+) {
+  const questions =
+    Array.isArray(
+      draft.questions,
+    )
+      ? draft.questions
+      : [];
+
+  const start =
+    page * 5;
+
+  const currentQuestions =
+    questions.slice(
+      start,
+      start + 5,
+    );
+
+  const modal =
+    new ModalBuilder()
+      .setCustomId(
+        `lcso:application-modal:${draft._id}:${page}`,
+      )
+      .setTitle(
+        truncate(
+          `${draft.typeLabel || 'Application'} ${page + 1}`,
+          45,
+        ),
+      );
+
+  for (
+    let localIndex = 0;
+    localIndex <
+    currentQuestions.length;
+    localIndex += 1
+  ) {
+    const absoluteIndex =
+      start + localIndex;
+
+    const question =
+      String(
+        currentQuestions[
+          localIndex
+        ] || '',
+      );
+
+    const input =
+      new TextInputBuilder()
+        .setCustomId(
+          `q${absoluteIndex}`,
+        )
+        .setLabel(
+          truncate(
+            question ||
+              `Question ${absoluteIndex + 1}`,
+            45,
+          ),
+        )
+        .setStyle(
+          TextInputStyle.Paragraph,
+        )
+        .setRequired(true)
+        .setMaxLength(2000);
+
+    if (
+      question.length > 45
+    ) {
+      input.setPlaceholder(
+        truncate(
+          question,
+          100,
+        ),
+      );
+    }
+
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        input,
+      ),
+    );
+  }
+
+  return modal;
+}
+
+async function isStaff(
+  interaction,
+) {
+  if (!interaction.guild) {
+    return false;
+  }
+
+  const member =
+    await interaction.guild.members
+      .fetch(
+        interaction.user.id,
+      )
+      .catch(() => null);
+
+  if (!member) {
+    return false;
+  }
+
+  if (
+    member.permissions.has(
+      PermissionFlagsBits.Administrator,
+    ) ||
+    member.permissions.has(
       PermissionFlagsBits.ManageGuild,
+    ) ||
+    member.permissions.has(
+      PermissionFlagsBits.ManageRoles,
     )
   ) {
     return true;
   }
 
-
   const settings =
-    await collection(
-      'settings',
-    ).findOne({
-      guildId:
-        interaction.guildId,
-    });
+    await getDb()
+      .collection('settings')
+      .findOne({
+        guildId:
+          interaction.guild.id,
+      });
 
+  const roleIds =
+    Array.isArray(
+      settings?.dashboardAdminRoleIds,
+    )
+      ? settings.dashboardAdminRoleIds
+      : [];
 
-  const allowed =
-    [
-      settings?.staffRoleId,
-      ...(settings?.dashboardAdminRoleIds ??
-        []),
-    ].filter(
-      Boolean,
-    );
-
-
-  return allowed.some(
+  return roleIds.some(
     (roleId) =>
-      interaction.member.roles.cache.has(
+      member.roles.cache.has(
         roleId,
       ),
   );
 }
 
-
 /* =========================================================
-   TICKET SELECT
+   APPLICATIONS
    ========================================================= */
 
-async function ticketSelect(
+async function startApplication(
   interaction,
 ) {
+  const prefix =
+    'lcso:application:';
+
   const panelId =
-    interaction.customId.split(
-      ':',
-    )[2];
-
-
-  const optionKey =
-    interaction.values[0];
-
-
-  const panel =
-    await collection(
-      'ticketpanels',
-    ).findOne({
-      _id:
-        objectId(
-          panelId,
-        ),
-
-      guildId:
-        interaction.guildId,
-    });
-
-
-  if (!panel) {
-    return interaction.reply({
-      content:
-        'This ticket panel no longer exists.',
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  const option =
-    panel.options.find(
-      (item) =>
-        item.key ===
-        optionKey,
+    interaction.customId.slice(
+      prefix.length,
     );
 
+  const oid =
+    objectId(panelId);
 
-  if (!option) {
-    return interaction.reply({
+  if (!oid) {
+    await interaction.reply({
       content:
-        'That ticket type is unavailable.',
+        '❌ Application panel could not be found.',
+      ephemeral: true,
+    });
 
-      ephemeral:
-        true,
+    return;
+  }
+
+  const panel =
+    await getDb()
+      .collection(
+        'applicationpanels',
+      )
+      .findOne({
+        _id: oid,
+        guildId:
+          interaction.guild.id,
+      });
+
+  if (!panel) {
+    await interaction.reply({
+      content:
+        '❌ This application panel no longer exists.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const choices =
+    getApplicationChoices(
+      panel,
+    );
+
+  const selected =
+    interaction.values[0];
+
+  const choice =
+    findChoice(
+      choices,
+      selected,
+    );
+
+  if (!choice) {
+    await interaction.reply({
+      content:
+        '❌ That application type could not be found.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const questions =
+    Array.isArray(
+      choice.questions,
+    )
+      ? choice.questions
+          .map((question) =>
+            String(
+              question || '',
+            ).trim(),
+          )
+          .filter(Boolean)
+          .slice(0, 15)
+      : [];
+
+  if (
+    questions.length === 0
+  ) {
+    await interaction.reply({
+      content:
+        '❌ This application has no questions configured.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const now =
+    new Date();
+
+  const draftResult =
+    await getDb()
+      .collection(
+        'applicationdrafts',
+      )
+      .insertOne({
+        guildId:
+          interaction.guild.id,
+
+        panelId:
+          panel._id,
+
+        typeKey:
+          selected,
+
+        typeLabel:
+          choice.label ||
+          selected,
+
+        applicantId:
+          interaction.user.id,
+
+        applicantTag:
+          interaction.user.tag,
+
+        questions,
+
+        answerMap: {},
+
+        createdAt:
+          now,
+
+        updatedAt:
+          now,
+
+        expiresAt:
+          new Date(
+            now.getTime() +
+              60 * 60 * 1000,
+          ),
+      });
+
+  const draft =
+    await getDb()
+      .collection(
+        'applicationdrafts',
+      )
+      .findOne({
+        _id:
+          draftResult.insertedId,
+      });
+
+  if (!draft) {
+    await interaction.reply({
+      content:
+        '❌ Could not create the application.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  await interaction.showModal(
+    buildApplicationModal(
+      draft,
+      0,
+    ),
+  );
+}
+
+async function continueApplication(
+  interaction,
+) {
+  const parts =
+    interaction.customId.split(
+      ':',
+    );
+
+  const draftId =
+    parts[2];
+
+  const page =
+    Number(parts[3]);
+
+  const oid =
+    objectId(draftId);
+
+  if (
+    !oid ||
+    !Number.isInteger(page)
+  ) {
+    await interaction.reply({
+      content:
+        '❌ Application session is invalid.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const draft =
+    await getDb()
+      .collection(
+        'applicationdrafts',
+      )
+      .findOne({
+        _id: oid,
+        applicantId:
+          interaction.user.id,
+      });
+
+  if (!draft) {
+    await interaction.reply({
+      content:
+        '❌ This application session has expired.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  await interaction.showModal(
+    buildApplicationModal(
+      draft,
+      page,
+    ),
+  );
+}
+
+async function submitApplicationPage(
+  interaction,
+) {
+  const parts =
+    interaction.customId.split(
+      ':',
+    );
+
+  const draftId =
+    parts[2];
+
+  const page =
+    Number(parts[3]);
+
+  const oid =
+    objectId(draftId);
+
+  if (
+    !oid ||
+    !Number.isInteger(page)
+  ) {
+    await interaction.reply({
+      content:
+        '❌ Application session is invalid.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const drafts =
+    getDb().collection(
+      'applicationdrafts',
+    );
+
+  const draft =
+    await drafts.findOne({
+      _id: oid,
+      applicantId:
+        interaction.user.id,
+    });
+
+  if (!draft) {
+    await interaction.reply({
+      content:
+        '❌ This application session has expired.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const questions =
+    Array.isArray(
+      draft.questions,
+    )
+      ? draft.questions
+      : [];
+
+  const answerMap = {
+    ...(draft.answerMap ||
+      {}),
+  };
+
+  const start =
+    page * 5;
+
+  const currentQuestions =
+    questions.slice(
+      start,
+      start + 5,
+    );
+
+  for (
+    let localIndex = 0;
+    localIndex <
+    currentQuestions.length;
+    localIndex += 1
+  ) {
+    const absoluteIndex =
+      start +
+      localIndex;
+
+    answerMap[
+      String(absoluteIndex)
+    ] =
+      interaction.fields.getTextInputValue(
+        `q${absoluteIndex}`,
+      );
+  }
+
+  await drafts.updateOne(
+    {
+      _id: draft._id,
+    },
+    {
+      $set: {
+        answerMap,
+        updatedAt:
+          new Date(),
+      },
+    },
+  );
+
+  const nextStart =
+    start + 5;
+
+  if (
+    nextStart <
+    questions.length
+  ) {
+    const nextPage =
+      page + 1;
+
+    const button =
+      new ButtonBuilder()
+        .setCustomId(
+          `lcso:application-next:${draft._id}:${nextPage}`,
+        )
+        .setLabel(
+          `Continue to Part ${nextPage + 1}`,
+        )
+        .setStyle(
+          ButtonStyle.Primary,
+        );
+
+    await interaction.reply({
+      content:
+        `✅ Part ${page + 1} completed. Continue to the next part of the application.`,
+      components: [
+        new ActionRowBuilder().addComponents(
+          button,
+        ),
+      ],
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  await finishApplication(
+    interaction,
+    {
+      ...draft,
+      answerMap,
+    },
+  );
+}
+
+async function finishApplication(
+  interaction,
+  draft,
+) {
+  const panel =
+    await getDb()
+      .collection(
+        'applicationpanels',
+      )
+      .findOne({
+        _id:
+          draft.panelId,
+        guildId:
+          interaction.guild.id,
+      });
+
+  if (!panel) {
+    await interaction.reply({
+      content:
+        '❌ Application panel no longer exists.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const choices =
+    getApplicationChoices(
+      panel,
+    );
+
+  const choice =
+    findChoice(
+      choices,
+      draft.typeKey,
+    );
+
+  const reviewChannelId =
+    panel.reviewChannelId ||
+    panel.applicationReviewChannelId;
+
+  if (!reviewChannelId) {
+    await interaction.reply({
+      content:
+        '❌ Application review channel has not been configured.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const reviewChannel =
+    interaction.guild.channels.cache.get(
+      reviewChannelId,
+    ) ||
+    (await interaction.guild.channels
+      .fetch(
+        reviewChannelId,
+      )
+      .catch(() => null));
+
+  if (
+    !reviewChannel ||
+    !reviewChannel.isTextBased() ||
+    typeof reviewChannel.send !==
+      'function'
+  ) {
+    await interaction.reply({
+      content:
+        '❌ The configured application review channel is invalid.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const questions =
+    Array.isArray(
+      draft.questions,
+    )
+      ? draft.questions
+      : [];
+
+  const answers =
+    questions.map(
+      (
+        question,
+        index,
+      ) => ({
+        question,
+        answer:
+          String(
+            draft.answerMap?.[
+              String(index)
+            ] || '',
+          ).trim(),
+      }),
+    );
+
+  const now =
+    new Date();
+
+  const result =
+    await getDb()
+      .collection(
+        'applications',
+      )
+      .insertOne({
+        guildId:
+          interaction.guild.id,
+
+        panelId:
+          panel._id,
+
+        typeKey:
+          draft.typeKey,
+
+        typeLabel:
+          draft.typeLabel,
+
+        applicantId:
+          interaction.user.id,
+
+        applicantTag:
+          interaction.user.tag,
+
+        questions,
+
+        answers,
+
+        status:
+          'Pending',
+
+        reviewChannelId,
+
+        createdAt:
+          now,
+
+        updatedAt:
+          now,
+      });
+
+  const embed =
+    new EmbedBuilder()
+      .setColor(0xc9a15b)
+      .setTitle(
+        `📋 New Application — ${draft.typeLabel}`,
+      )
+      .setDescription(
+        `**Applicant:** <@${interaction.user.id}>\n**Application:** ${draft.typeLabel}`,
+      )
+      .setFooter({
+        text:
+          'Liberty County Sheriff’s Office • Springfield Roleplay',
+      })
+      .setTimestamp(now);
+
+  for (
+    let index = 0;
+    index <
+    answers.length;
+    index += 1
+  ) {
+    const item =
+      answers[index];
+
+    embed.addFields({
+      name:
+        `${index + 1}. ${truncate(
+          item.question,
+          240,
+        )}`,
+
+      value:
+        truncate(
+          item.answer ||
+            'No response',
+          1000,
+        ),
+
+      inline: false,
     });
   }
 
+  const accept =
+    new ButtonBuilder()
+      .setCustomId(
+        `lcso:application-review:${result.insertedId}:accept`,
+      )
+      .setLabel('Accept')
+      .setStyle(
+        ButtonStyle.Success,
+      );
+
+  const deny =
+    new ButtonBuilder()
+      .setCustomId(
+        `lcso:application-review:${result.insertedId}:deny`,
+      )
+      .setLabel('Deny')
+      .setStyle(
+        ButtonStyle.Danger,
+      );
+
+  const reviewMessage =
+    await reviewChannel.send({
+      embeds: [embed],
+      components: [
+        new ActionRowBuilder().addComponents(
+          accept,
+          deny,
+        ),
+      ],
+      allowedMentions: {
+        users: [
+          interaction.user.id,
+        ],
+      },
+    });
+
+  await getDb()
+    .collection(
+      'applications',
+    )
+    .updateOne(
+      {
+        _id:
+          result.insertedId,
+      },
+      {
+        $set: {
+          reviewMessageId:
+            reviewMessage.id,
+        },
+      },
+    );
+
+  await getDb()
+    .collection(
+      'applicationdrafts',
+    )
+    .deleteOne({
+      _id:
+        draft._id,
+    });
+
+  await interaction.reply({
+    content:
+      `✅ Your **${draft.typeLabel}** application has been submitted successfully.`,
+    ephemeral: true,
+  });
+}
+
+async function openApplicationReview(
+  interaction,
+) {
+  if (
+    !(await isStaff(
+      interaction,
+    ))
+  ) {
+    await interaction.reply({
+      content:
+        '❌ You do not have permission to review applications.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const parts =
+    interaction.customId.split(
+      ':',
+    );
+
+  const applicationId =
+    parts[2];
+
+  const decision =
+    parts[3];
+
+  const oid =
+    objectId(
+      applicationId,
+    );
+
+  if (!oid) {
+    await interaction.reply({
+      content:
+        '❌ Application could not be found.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const application =
+    await getDb()
+      .collection(
+        'applications',
+      )
+      .findOne({
+        _id: oid,
+        guildId:
+          interaction.guild.id,
+      });
+
+  if (!application) {
+    await interaction.reply({
+      content:
+        '❌ Application could not be found.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  if (
+    String(
+      application.status,
+    ).toLowerCase() !==
+    'pending'
+  ) {
+    await interaction.reply({
+      content:
+        '❌ This application has already been reviewed.',
+      ephemeral: true,
+    });
+
+    return;
+  }
 
   const modal =
     new ModalBuilder()
       .setCustomId(
-        `lcso:ticketform:${panelId}:${option.key}`,
+        `lcso:application-review-modal:${applicationId}:${decision}`,
       )
       .setTitle(
-        option.label.slice(
-          0,
-          45,
-        ),
+        decision === 'accept'
+          ? 'Accept Application'
+          : 'Deny Application',
       );
 
-
-  const subject =
+  const reason =
     new TextInputBuilder()
-      .setCustomId(
-        'subject',
-      )
+      .setCustomId('reason')
       .setLabel(
-        'Subject',
-      )
-      .setStyle(
-        TextInputStyle.Short,
-      )
-      .setRequired(
-        true,
-      )
-      .setMaxLength(
-        100,
-      )
-      .setPlaceholder(
-        'Briefly describe the issue',
-      );
-
-
-  const details =
-    new TextInputBuilder()
-      .setCustomId(
-        'details',
-      )
-      .setLabel(
-        'Details',
+        'Reason / Notes',
       )
       .setStyle(
         TextInputStyle.Paragraph,
       )
-      .setRequired(
-        true,
-      )
-      .setMaxLength(
-        1000,
-      )
-      .setPlaceholder(
-        'Explain what you need help with...',
-      );
-
+      .setRequired(false)
+      .setMaxLength(1000);
 
   modal.addComponents(
-    new ActionRowBuilder()
-      .addComponents(
-        subject,
-      ),
-
-    new ActionRowBuilder()
-      .addComponents(
-        details,
-      ),
+    new ActionRowBuilder().addComponents(
+      reason,
+    ),
   );
-
 
   await interaction.showModal(
     modal,
   );
 }
 
-
-/* =========================================================
-   CREATE TICKET
-   ========================================================= */
-
-async function ticketModal(
+async function submitApplicationReview(
   interaction,
 ) {
-  const [
-    ,
-    ,
-    panelId,
-    optionKey,
-  ] =
+  if (
+    !(await isStaff(
+      interaction,
+    ))
+  ) {
+    await interaction.reply({
+      content:
+        '❌ You do not have permission to review applications.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const parts =
     interaction.customId.split(
       ':',
     );
 
+  const applicationId =
+    parts[3];
 
-  const panel =
-    await collection(
-      'ticketpanels',
-    ).findOne({
-      _id:
-        objectId(
-          panelId,
-        ),
+  const decision =
+    parts[4];
 
-      guildId:
-        interaction.guildId,
-    });
-
-
-  if (!panel) {
-    return interaction.reply({
-      content:
-        'Ticket panel no longer exists.',
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  const option =
-    panel.options.find(
-      (item) =>
-        item.key ===
-        optionKey,
+  const oid =
+    objectId(
+      applicationId,
     );
 
-
-  if (!option) {
-    return interaction.reply({
+  if (!oid) {
+    await interaction.reply({
       content:
-        'Ticket type unavailable.',
-
-      ephemeral:
-        true,
+        '❌ Application could not be found.',
+      ephemeral: true,
     });
+
+    return;
   }
 
+  const applications =
+    getDb().collection(
+      'applications',
+    );
 
-  const existing =
-    await collection(
-      'tickets',
-    ).findOne({
+  const application =
+    await applications.findOne({
+      _id: oid,
       guildId:
-        interaction.guildId,
-
-      ownerId:
-        interaction.user.id,
-
-      status:
-        'Open',
+        interaction.guild.id,
     });
 
-
-  if (existing) {
-    return interaction.reply({
+  if (!application) {
+    await interaction.reply({
       content:
-        `You already have an open ticket: <#${existing.channelId}>`,
-
-      ephemeral:
-        true,
+        '❌ Application could not be found.',
+      ephemeral: true,
     });
+
+    return;
   }
 
+  const reason =
+    interaction.fields
+      .getTextInputValue(
+        'reason',
+      )
+      .trim();
 
-  await interaction.deferReply({
-    ephemeral:
-      true,
+  const accepted =
+    decision === 'accept';
+
+  const status =
+    accepted
+      ? 'Accepted'
+      : 'Denied';
+
+  const now =
+    new Date();
+
+  await applications.updateOne(
+    {
+      _id: application._id,
+    },
+    {
+      $set: {
+        status,
+        reviewedBy:
+          interaction.user.id,
+        reviewedByTag:
+          interaction.user.tag,
+        reviewReason:
+          reason || null,
+        reviewedAt: now,
+        updatedAt: now,
+      },
+    },
+  );
+
+  /*
+   * Optional accepted role support.
+   * If an application type later has
+   * acceptedRoleId configured, it will
+   * automatically be assigned.
+   */
+  if (accepted) {
+    const panel =
+      await getDb()
+        .collection(
+          'applicationpanels',
+        )
+        .findOne({
+          _id:
+            application.panelId,
+        });
+
+    const choice =
+      findChoice(
+        getApplicationChoices(
+          panel,
+        ),
+        application.typeKey,
+      );
+
+    const acceptedRoleId =
+      choice?.acceptedRoleId ||
+      panel?.acceptedRoleId;
+
+    if (acceptedRoleId) {
+      const member =
+        await interaction.guild.members
+          .fetch(
+            application.applicantId,
+          )
+          .catch(() => null);
+
+      const role =
+        interaction.guild.roles.cache.get(
+          acceptedRoleId,
+        );
+
+      if (
+        member &&
+        role &&
+        role.editable
+      ) {
+        await member.roles
+          .add(role)
+          .catch(() => {});
+      }
+    }
+  }
+
+  const applicant =
+    await interaction.client.users
+      .fetch(
+        application.applicantId,
+      )
+      .catch(() => null);
+
+  if (applicant) {
+    const resultEmbed =
+      new EmbedBuilder()
+        .setColor(
+          accepted
+            ? 0x57f287
+            : 0xed4245,
+        )
+        .setTitle(
+          accepted
+            ? '✅ Application Accepted'
+            : '❌ Application Denied',
+        )
+        .setDescription(
+          [
+            `Your **${application.typeLabel || 'LCSO'}** application has been **${status.toLowerCase()}**.`,
+            '',
+            `**Reviewed by:** ${interaction.user.tag}`,
+            `**Reason:** ${reason || 'No reason provided.'}`,
+          ].join('\n'),
+        )
+        .setFooter({
+          text:
+            'Liberty County Sheriff’s Office • Springfield Roleplay',
+        })
+        .setTimestamp();
+
+    await applicant
+      .send({
+        embeds: [
+          resultEmbed,
+        ],
+      })
+      .catch(() => {});
+  }
+
+  if (
+    application.reviewChannelId &&
+    application.reviewMessageId
+  ) {
+    const reviewChannel =
+      interaction.guild.channels.cache.get(
+        application.reviewChannelId,
+      ) ||
+      (await interaction.guild.channels
+        .fetch(
+          application.reviewChannelId,
+        )
+        .catch(() => null));
+
+    if (
+      reviewChannel &&
+      reviewChannel.isTextBased() &&
+      reviewChannel.messages
+    ) {
+      const reviewMessage =
+        await reviewChannel.messages
+          .fetch(
+            application.reviewMessageId,
+          )
+          .catch(() => null);
+
+      if (reviewMessage) {
+        const oldEmbed =
+          reviewMessage.embeds[0];
+
+        const updatedEmbed =
+          oldEmbed
+            ? EmbedBuilder.from(
+                oldEmbed,
+              )
+            : new EmbedBuilder()
+                .setTitle(
+                  application.typeLabel ||
+                    'Application',
+                );
+
+        updatedEmbed
+          .setColor(
+            accepted
+              ? 0x57f287
+              : 0xed4245,
+          )
+          .addFields({
+            name: 'Decision',
+            value: [
+              `**Status:** ${status}`,
+              `**Reviewed By:** <@${interaction.user.id}>`,
+              `**Reason:** ${reason || 'No reason provided.'}`,
+            ].join('\n'),
+          });
+
+        await reviewMessage
+          .edit({
+            embeds: [
+              updatedEmbed,
+            ],
+            components: [],
+          })
+          .catch(() => {});
+      }
+    }
+  }
+
+  await interaction.reply({
+    content:
+      `✅ Application ${status.toLowerCase()}.`,
+    ephemeral: true,
   });
+}
 
+/* =========================================================
+   TICKETS
+   ========================================================= */
+
+async function startTicket(
+  interaction,
+) {
+  const panelId =
+    interaction.customId.slice(
+      'lcso:ticket:'.length,
+    );
+
+  const oid =
+    objectId(panelId);
+
+  if (!oid) {
+    await interaction.reply({
+      content:
+        '❌ Ticket panel could not be found.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const panel =
+    await getDb()
+      .collection(
+        'ticketpanels',
+      )
+      .findOne({
+        _id: oid,
+        guildId:
+          interaction.guild.id,
+      });
+
+  if (!panel) {
+    await interaction.reply({
+      content:
+        '❌ This ticket panel no longer exists.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const choices =
+    getTicketChoices(
+      panel,
+    );
+
+  const selected =
+    interaction.values[0];
+
+  const choice =
+    findChoice(
+      choices,
+      selected,
+    );
+
+  if (!choice) {
+    await interaction.reply({
+      content:
+        '❌ Ticket type could not be found.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const modal =
+    new ModalBuilder()
+      .setCustomId(
+        `lcso:ticket-modal:${panel._id}:${encodeURIComponent(
+          selected,
+        )}`,
+      )
+      .setTitle(
+        truncate(
+          choice.label ||
+            'Open Ticket',
+          45,
+        ),
+      );
 
   const subject =
-    interaction.fields
-      .getTextInputValue(
-        'subject',
-      );
-
+    new TextInputBuilder()
+      .setCustomId('subject')
+      .setLabel('Subject')
+      .setStyle(
+        TextInputStyle.Short,
+      )
+      .setRequired(true)
+      .setMaxLength(100);
 
   const details =
-    interaction.fields
-      .getTextInputValue(
-        'details',
-      );
+    new TextInputBuilder()
+      .setCustomId('details')
+      .setLabel(
+        'Explain what you need help with',
+      )
+      .setStyle(
+        TextInputStyle.Paragraph,
+      )
+      .setRequired(true)
+      .setMaxLength(2000);
 
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      subject,
+    ),
+    new ActionRowBuilder().addComponents(
+      details,
+    ),
+  );
 
-  const permissionOverwrites =
-    [
-      {
-        id:
-          interaction.guild.roles.everyone.id,
+  await interaction.showModal(
+    modal,
+  );
+}
 
-        deny: [
-          PermissionFlagsBits.ViewChannel,
-        ],
-      },
+async function submitTicket(
+  interaction,
+) {
+  const parts =
+    interaction.customId.split(
+      ':',
+    );
 
-      {
-        id:
-          interaction.user.id,
+  const panelId =
+    parts[2];
 
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
-          PermissionFlagsBits.AttachFiles,
-          PermissionFlagsBits.EmbedLinks,
-        ],
-      },
-    ];
+  const selected =
+    decodeURIComponent(
+      parts.slice(3).join(
+        ':',
+      ),
+    );
 
+  const oid =
+    objectId(panelId);
 
-  for (
-    const roleId of
-      panel.supportRoleIds ??
-      []
-  ) {
-    permissionOverwrites.push({
+  if (!oid) {
+    await interaction.reply({
+      content:
+        '❌ Ticket panel could not be found.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const panel =
+    await getDb()
+      .collection(
+        'ticketpanels',
+      )
+      .findOne({
+        _id: oid,
+        guildId:
+          interaction.guild.id,
+      });
+
+  if (!panel) {
+    await interaction.reply({
+      content:
+        '❌ Ticket panel no longer exists.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const choices =
+    getTicketChoices(
+      panel,
+    );
+
+  const choice =
+    findChoice(
+      choices,
+      selected,
+    );
+
+  if (!choice) {
+    await interaction.reply({
+      content:
+        '❌ Ticket type could not be found.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const categoryId =
+    choice.categoryId ||
+    panel.categoryId ||
+    panel.ticketCategoryId;
+
+  const supportRoleIds =
+    Array.isArray(
+      choice.supportRoleIds,
+    )
+      ? choice.supportRoleIds
+      : Array.isArray(
+          panel.supportRoleIds,
+        )
+        ? panel.supportRoleIds
+        : [];
+
+  const prefix =
+    safeName(
+      choice.prefix ||
+        choice.label ||
+        'ticket',
+    ) || 'ticket';
+
+  const username =
+    safeName(
+      interaction.user.username,
+    ) || 'user';
+
+  const permissions = [
+    {
       id:
-        roleId,
+        interaction.guild
+          .roles.everyone.id,
+      deny: [
+        PermissionFlagsBits.ViewChannel,
+      ],
+    },
 
+    {
+      id:
+        interaction.user.id,
       allow: [
         PermissionFlagsBits.ViewChannel,
         PermissionFlagsBits.SendMessages,
         PermissionFlagsBits.ReadMessageHistory,
         PermissionFlagsBits.AttachFiles,
+        PermissionFlagsBits.EmbedLinks,
       ],
-    });
-  }
+    },
+  ];
 
+  for (
+    const roleId of supportRoleIds
+  ) {
+    if (
+      interaction.guild.roles.cache.has(
+        roleId,
+      )
+    ) {
+      permissions.push({
+        id: roleId,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory,
+        ],
+      });
+    }
+  }
 
   const channel =
     await interaction.guild.channels.create({
       name:
-        cleanName(
-          `${option.prefix}-${interaction.user.username}`,
+        `${prefix}-${username}`.slice(
+          0,
+          90,
         ),
 
       type:
         ChannelType.GuildText,
 
       parent:
-        panel.categoryId,
+        categoryId ||
+        undefined,
 
-      permissionOverwrites,
+      permissionOverwrites:
+        permissions,
 
       reason:
-        `Ticket opened by ${interaction.user.tag}`,
+        `LCSO ticket opened by ${interaction.user.tag}`,
     });
 
+  const subject =
+    interaction.fields
+      .getTextInputValue(
+        'subject',
+      )
+      .trim();
 
-  const ticketResult =
-    await collection(
-      'tickets',
-    ).insertOne({
-      guildId:
-        interaction.guildId,
+  const details =
+    interaction.fields
+      .getTextInputValue(
+        'details',
+      )
+      .trim();
 
-      panelId:
-        panel._id,
+  const now =
+    new Date();
 
-      ownerId:
-        interaction.user.id,
+  const result =
+    await getDb()
+      .collection('tickets')
+      .insertOne({
+        guildId:
+          interaction.guild.id,
 
-      type:
-        option.key,
+        ownerId:
+          interaction.user.id,
 
-      typeLabel:
-        option.label,
+        ownerTag:
+          interaction.user.tag,
 
-      subject,
+        panelId:
+          panel._id,
 
-      details,
+        typeKey:
+          selected,
 
-      channelId:
-        channel.id,
+        type:
+          choice.label ||
+          selected,
 
-      status:
-        'Open',
+        subject,
+        details,
 
-      createdAt:
-        new Date(),
+        channelId:
+          channel.id,
 
-      updatedAt:
-        new Date(),
+        status:
+          'Open',
 
-      closedAt:
-        null,
-    });
+        supportRoleIds,
 
+        createdAt:
+          now,
+
+        updatedAt:
+          now,
+      });
 
   const welcome =
     new EmbedBuilder()
-      .setColor(
-        0xc9a15b,
-      )
+      .setColor(0xc9a15b)
       .setTitle(
-        `${option.emoji ?? '📩'} ${option.label}`,
+        `📩 ${choice.label || 'LCSO Support'}`,
       )
       .setDescription(
-        `Welcome <@${interaction.user.id}>.\n\nA member of the appropriate LCSO staff team will respond as soon as possible.`,
-      )
-      .addFields(
-        {
-          name:
-            'Subject',
-
-          value:
-            subject,
-        },
-
-        {
-          name:
-            'Details',
-
-          value:
-            details,
-        },
+        [
+          `Welcome <@${interaction.user.id}>.`,
+          '',
+          'A member of the Liberty County Sheriff’s Office will assist you as soon as possible.',
+          '',
+          `**Subject:** ${subject}`,
+          `**Details:** ${details}`,
+        ].join('\n'),
       )
       .setFooter({
         text:
-          panel.footer ??
-          "Liberty County Sheriff's Office",
+          'Liberty County Sheriff’s Office • Springfield Roleplay',
       })
-      .setTimestamp();
+      .setTimestamp(now);
 
-
-  applyImages(
-    welcome,
-    panel,
-  );
-
-
-  const closeButton =
+  const close =
     new ButtonBuilder()
       .setCustomId(
-        `lcso:ticketclose:${ticketResult.insertedId}`,
+        `lcso:ticket-close:${result.insertedId}`,
       )
       .setLabel(
         'Close Ticket',
@@ -539,1021 +1708,333 @@ async function ticketModal(
         ButtonStyle.Danger,
       );
 
-
   await channel.send({
-    content:
-      `<@${interaction.user.id}>`,
-
-    embeds: [
-      welcome,
-    ],
-
+    content: `<@${interaction.user.id}>`,
+    embeds: [welcome],
     components: [
-      new ActionRowBuilder()
-        .addComponents(
-          closeButton,
-        ),
-    ],
-  });
-
-
-  await interaction.editReply({
-    content:
-      `Your ticket has been created: ${channel}`,
-  });
-}
-
-
-/* =========================================================
-   APPLICATION SELECT
-   ========================================================= */
-
-async function applicationSelect(
-  interaction,
-) {
-  const panelId =
-    interaction.customId.split(
-      ':',
-    )[2];
-
-
-  const optionKey =
-    interaction.values[0];
-
-
-  const panel =
-    await collection(
-      'applicationpanels',
-    ).findOne({
-      _id:
-        objectId(
-          panelId,
-        ),
-
-      guildId:
-        interaction.guildId,
-    });
-
-
-  if (!panel) {
-    return interaction.reply({
-      content:
-        'This application panel no longer exists.',
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  const option =
-    panel.options.find(
-      (item) =>
-        item.key ===
-        optionKey,
-    );
-
-
-  if (!option) {
-    return interaction.reply({
-      content:
-        'That application is unavailable.',
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  const existing =
-    await collection(
-      'applications',
-    ).findOne({
-      guildId:
-        interaction.guildId,
-
-      applicantId:
-        interaction.user.id,
-
-      panelId:
-        panel._id,
-
-      typeKey:
-        option.key,
-
-      status:
-        'Pending',
-    });
-
-
-  if (existing) {
-    return interaction.reply({
-      content:
-        'You already have a pending application of this type.',
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  const modal =
-    new ModalBuilder()
-      .setCustomId(
-        `lcso:applicationform:${panelId}:${option.key}`,
-      )
-      .setTitle(
-        option.label.slice(
-          0,
-          45,
-        ),
-      );
-
-
-  option.questions
-    .slice(
-      0,
-      5,
-    )
-    .forEach(
-      (
-        question,
-        index,
-      ) => {
-        const input =
-          new TextInputBuilder()
-            .setCustomId(
-              `q${index}`,
-            )
-            .setLabel(
-              String(
-                question,
-              ).slice(
-                0,
-                45,
-              ),
-            )
-            .setStyle(
-              TextInputStyle.Paragraph,
-            )
-            .setRequired(
-              true,
-            )
-            .setMaxLength(
-              1000,
-            );
-
-
-        modal.addComponents(
-          new ActionRowBuilder()
-            .addComponents(
-              input,
-            ),
-        );
-      },
-    );
-
-
-  await interaction.showModal(
-    modal,
-  );
-}
-
-
-/* =========================================================
-   APPLICATION SUBMIT
-   ========================================================= */
-
-async function applicationModal(
-  interaction,
-) {
-  const [
-    ,
-    ,
-    panelId,
-    optionKey,
-  ] =
-    interaction.customId.split(
-      ':',
-    );
-
-
-  const panel =
-    await collection(
-      'applicationpanels',
-    ).findOne({
-      _id:
-        objectId(
-          panelId,
-        ),
-
-      guildId:
-        interaction.guildId,
-    });
-
-
-  if (!panel) {
-    return interaction.reply({
-      content:
-        'Application panel no longer exists.',
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  const option =
-    panel.options.find(
-      (item) =>
-        item.key ===
-        optionKey,
-    );
-
-
-  if (!option) {
-    return interaction.reply({
-      content:
-        'Application unavailable.',
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  const answers =
-    option.questions
-      .slice(
-        0,
-        5,
-      )
-      .map(
-        (
-          question,
-          index,
-        ) => ({
-          question,
-
-          answer:
-            interaction.fields
-              .getTextInputValue(
-                `q${index}`,
-              ),
-        }),
-      );
-
-
-  const result =
-    await collection(
-      'applications',
-    ).insertOne({
-      guildId:
-        interaction.guildId,
-
-      panelId:
-        panel._id,
-
-      applicantId:
-        interaction.user.id,
-
-      applicantTag:
-        interaction.user.tag,
-
-      typeKey:
-        option.key,
-
-      typeLabel:
-        option.label,
-
-      answers,
-
-      status:
-        'Pending',
-
-      reviewReason:
-        null,
-
-      reviewedBy:
-        null,
-
-      reviewedAt:
-        null,
-
-      reviewChannelId:
-        panel.reviewChannelId,
-
-      reviewMessageId:
-        null,
-
-      createdAt:
-        new Date(),
-
-      updatedAt:
-        new Date(),
-    });
-
-
-  const reviewChannel =
-    interaction.guild.channels.cache.get(
-      panel.reviewChannelId,
-    ) ??
-    await interaction.guild.channels
-      .fetch(
-        panel.reviewChannelId,
-      )
-      .catch(
-        () => null,
-      );
-
-
-  if (
-    !reviewChannel ||
-    !reviewChannel.isTextBased()
-  ) {
-    throw new Error(
-      'Application review channel is unavailable.',
-    );
-  }
-
-
-  const embed =
-    new EmbedBuilder()
-      .setColor(
-        0xc9a15b,
-      )
-      .setTitle(
-        `${option.emoji ?? '📋'} ${option.label}`,
-      )
-      .setDescription(
-        `New application from <@${interaction.user.id}>`,
-      )
-      .setThumbnail(
-        interaction.user.displayAvatarURL(),
-      )
-      .setFooter({
-        text:
-          panel.footer ??
-          "Liberty County Sheriff's Office",
-      })
-      .setTimestamp();
-
-
-  for (
-    const answer of
-      answers
-  ) {
-    embed.addFields({
-      name:
-        String(
-          answer.question,
-        ).slice(
-          0,
-          256,
-        ),
-
-      value:
-        String(
-          answer.answer ||
-          'No response',
-        ).slice(
-          0,
-          1024,
-        ),
-
-      inline:
-        false,
-    });
-  }
-
-
-  const accept =
-    new ButtonBuilder()
-      .setCustomId(
-        `lcso:appreview:${result.insertedId}:Accepted`,
-      )
-      .setLabel(
-        'Accept',
-      )
-      .setStyle(
-        ButtonStyle.Success,
-      );
-
-
-  const deny =
-    new ButtonBuilder()
-      .setCustomId(
-        `lcso:appreview:${result.insertedId}:Denied`,
-      )
-      .setLabel(
-        'Deny',
-      )
-      .setStyle(
-        ButtonStyle.Danger,
-      );
-
-
-  const reviewMessage =
-    await reviewChannel.send({
-      embeds: [
-        embed,
-      ],
-
-      components: [
-        new ActionRowBuilder()
-          .addComponents(
-            accept,
-            deny,
-          ),
-      ],
-    });
-
-
-  await collection(
-    'applications',
-  ).updateOne(
-    {
-      _id:
-        result.insertedId,
-    },
-
-    {
-      $set: {
-        reviewMessageId:
-          reviewMessage.id,
-      },
-    },
-  );
-
-
-  await interaction.reply({
-    content:
-      'Your application has been submitted successfully.',
-
-    ephemeral:
-      true,
-  });
-}
-
-
-/* =========================================================
-   APPLICATION REVIEW BUTTON
-   ========================================================= */
-
-async function applicationReviewButton(
-  interaction,
-) {
-  if (
-    !await canReview(
-      interaction,
-    )
-  ) {
-    return interaction.reply({
-      content:
-        'You are not authorized to review applications.',
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  const [
-    ,
-    ,
-    applicationId,
-    decision,
-  ] =
-    interaction.customId.split(
-      ':',
-    );
-
-
-  const modal =
-    new ModalBuilder()
-      .setCustomId(
-        `lcso:appreviewform:${applicationId}:${decision}`,
-      )
-      .setTitle(
-        `${decision} Application`,
-      );
-
-
-  const reason =
-    new TextInputBuilder()
-      .setCustomId(
-        'reason',
-      )
-      .setLabel(
-        'Reason / Staff Note',
-      )
-      .setStyle(
-        TextInputStyle.Paragraph,
-      )
-      .setRequired(
-        false,
-      )
-      .setMaxLength(
-        500,
-      );
-
-
-  modal.addComponents(
-    new ActionRowBuilder()
-      .addComponents(
-        reason,
+      new ActionRowBuilder().addComponents(
+        close,
       ),
-  );
-
-
-  await interaction.showModal(
-    modal,
-  );
-}
-
-
-/* =========================================================
-   APPLICATION REVIEW MODAL
-   ========================================================= */
-
-async function applicationReviewModal(
-  interaction,
-) {
-  if (
-    !await canReview(
-      interaction,
-    )
-  ) {
-    return interaction.reply({
-      content:
-        'You are not authorized.',
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  const [
-    ,
-    ,
-    applicationId,
-    decision,
-  ] =
-    interaction.customId.split(
-      ':',
-    );
-
-
-  const reason =
-    interaction.fields
-      .getTextInputValue(
-        'reason',
-      ) ||
-    'No reason provided.';
-
-
-  const applications =
-    collection(
-      'applications',
-    );
-
-
-  const application =
-    await applications.findOne({
-      _id:
-        objectId(
-          applicationId,
-        ),
-
-      guildId:
-        interaction.guildId,
-    });
-
-
-  if (!application) {
-    return interaction.reply({
-      content:
-        'Application not found.',
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  if (
-    application.status !==
-    'Pending'
-  ) {
-    return interaction.reply({
-      content:
-        `This application is already ${application.status}.`,
-
-      ephemeral:
-        true,
-    });
-  }
-
-
-  await applications.updateOne(
-    {
-      _id:
-        application._id,
-    },
-
-    {
-      $set: {
-        status:
-          decision,
-
-        reviewReason:
-          reason,
-
-        reviewedBy:
-          interaction.user.id,
-
-        reviewedAt:
-          new Date(),
-
-        updatedAt:
-          new Date(),
-      },
-    },
-  );
-
-
-  const current =
-    interaction.message;
-
-
-  if (current) {
-    const embed =
-      EmbedBuilder.from(
-        current.embeds[0],
-      );
-
-
-    embed
-      .setColor(
-        decision ===
-        'Accepted'
-          ? 0x4fa46b
-          : 0xc55656,
-      )
-      .addFields({
-        name:
-          'Decision',
-
-        value:
-          `**${decision}**\n${reason}\n\nReviewed by <@${interaction.user.id}>`,
-      });
-
-
-    await current.edit({
-      embeds: [
-        embed,
+    ],
+    allowedMentions: {
+      users: [
+        interaction.user.id,
       ],
-
-      components:
-        [],
-    });
-  }
-
-
-  const applicant =
-    await interaction.guild.members
-      .fetch(
-        application.applicantId,
-      )
-      .catch(
-        () => null,
-      );
-
-
-  if (applicant) {
-    await applicant.send({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(
-            decision ===
-            'Accepted'
-              ? 0x4fa46b
-              : 0xc55656,
-          )
-          .setTitle(
-            `Application ${decision}`,
-          )
-          .setDescription(
-            reason,
-          )
-          .setFooter({
-            text:
-              "Liberty County Sheriff's Office • Springfield Roleplay",
-          }),
-      ],
-    }).catch(
-      () => null,
-    );
-  }
-
+      roles:
+        supportRoleIds,
+    },
+  });
 
   await interaction.reply({
     content:
-      `Application ${decision.toLowerCase()}.`,
-
-    ephemeral:
-      true,
+      `✅ Your ticket has been created: ${channel}`,
+    ephemeral: true,
   });
 }
 
-
-/* =========================================================
-   CLOSE TICKET BUTTON
-   ========================================================= */
-
-async function ticketClose(
+async function closeTicket(
   interaction,
 ) {
-  const ticketId =
-    interaction.customId.split(
-      ':',
-    )[2];
+  let ticketId;
 
+  if (
+    interaction.customId.startsWith(
+      'lcso:ticket-close:',
+    )
+  ) {
+    ticketId =
+      interaction.customId.slice(
+        'lcso:ticket-close:'
+          .length,
+      );
+  } else {
+    ticketId =
+      interaction.customId.slice(
+        'lcso:ticket:close:'
+          .length,
+      );
+  }
+
+  const oid =
+    objectId(ticketId);
+
+  if (!oid) {
+    await interaction.reply({
+      content:
+        '❌ Ticket could not be found.',
+      ephemeral: true,
+    });
+
+    return;
+  }
+
+  const tickets =
+    getDb().collection(
+      'tickets',
+    );
 
   const ticket =
-    await collection(
-      'tickets',
-    ).findOne({
-      _id:
-        objectId(
-          ticketId,
-        ),
-
+    await tickets.findOne({
+      _id: oid,
       guildId:
-        interaction.guildId,
+        interaction.guild.id,
     });
-
 
   if (!ticket) {
-    return interaction.reply({
+    await interaction.reply({
       content:
-        'Ticket not found.',
-
-      ephemeral:
-        true,
+        '❌ Ticket could not be found.',
+      ephemeral: true,
     });
+
+    return;
   }
 
+  const member =
+    await interaction.guild.members
+      .fetch(
+        interaction.user.id,
+      )
+      .catch(() => null);
 
-  const panel =
-    await collection(
-      'ticketpanels',
-    ).findOne({
-      _id:
-        ticket.panelId,
-    });
+  const supportRoleIds =
+    Array.isArray(
+      ticket.supportRoleIds,
+    )
+      ? ticket.supportRoleIds
+      : [];
 
-
-  const isOwner =
-    ticket.ownerId ===
-    interaction.user.id;
-
-
-  const isStaff =
-    interaction.memberPermissions?.has(
-      PermissionFlagsBits.ManageChannels,
-    ) ||
-    (
-      panel?.supportRoleIds ??
-      []
-    ).some(
+  const supportMember =
+    member &&
+    supportRoleIds.some(
       (roleId) =>
-        interaction.member.roles.cache.has(
+        member.roles.cache.has(
           roleId,
         ),
     );
 
+  const permitted =
+    interaction.user.id ===
+      ticket.ownerId ||
+    supportMember ||
+    member?.permissions.has(
+      PermissionFlagsBits.ManageChannels,
+    ) ||
+    member?.permissions.has(
+      PermissionFlagsBits.Administrator,
+    );
 
-  if (
-    !isOwner &&
-    !isStaff
-  ) {
-    return interaction.reply({
+  if (!permitted) {
+    await interaction.reply({
       content:
-        'You cannot close this ticket.',
-
-      ephemeral:
-        true,
+        '❌ You cannot close this ticket.',
+      ephemeral: true,
     });
+
+    return;
   }
 
-
-  await collection(
-    'tickets',
-  ).updateOne(
+  await tickets.updateOne(
     {
-      _id:
-        ticket._id,
+      _id: ticket._id,
     },
-
     {
       $set: {
         status:
           'Closed',
-
         closedBy:
           interaction.user.id,
-
         closedAt:
           new Date(),
-
         updatedAt:
           new Date(),
       },
     },
   );
 
-
   await interaction.reply({
-    embeds: [
-      new EmbedBuilder()
-        .setColor(
-          0xc55656,
-        )
-        .setTitle(
-          'Ticket Closed',
-        )
-        .setDescription(
-          `Closed by <@${interaction.user.id}>.\n\nThis channel will be deleted shortly.`,
-        ),
-    ],
+    content:
+      '🔒 Ticket closed. This channel will be deleted shortly.',
   });
 
-
-  setTimeout(
-    () =>
-      interaction.channel
-        ?.delete(
-          'LCSO ticket closed',
-        )
-        .catch(
-          () => null,
-        ),
-
-    5000,
-  ).unref();
+  setTimeout(() => {
+    interaction.channel
+      ?.delete(
+        `Ticket closed by ${interaction.user.tag}`,
+      )
+      .catch(() => {});
+  }, 3000);
 }
 
-
 /* =========================================================
-   ROUTER
+   EVENT
    ========================================================= */
 
 export default {
-  name:
-    Events.InteractionCreate,
+  name: Events.InteractionCreate,
 
-  once:
-    false,
-
-  async execute(
-    interaction,
-  ) {
-    if (
-      !interaction.guildId ||
-      !interaction.customId?.startsWith(
-        'lcso:',
-      )
-    ) {
-      return;
-    }
-
-
+  async execute(interaction) {
     try {
+      /*
+       * APPLICATION DROPDOWN
+       */
       if (
-        interaction.isStringSelectMenu()
+        interaction.isStringSelectMenu() &&
+        interaction.customId.startsWith(
+          'lcso:application:',
+        )
       ) {
-        if (
-          interaction.customId.startsWith(
-            'lcso:ticket:',
-          )
-        ) {
-          return ticketSelect(
-            interaction,
-          );
-        }
+        await startApplication(
+          interaction,
+        );
 
-
-        if (
-          interaction.customId.startsWith(
-            'lcso:application:',
-          )
-        ) {
-          return applicationSelect(
-            interaction,
-          );
-        }
+        return;
       }
 
-
+      /*
+       * TICKET DROPDOWN
+       */
       if (
-        interaction.isModalSubmit()
+        interaction.isStringSelectMenu() &&
+        interaction.customId.startsWith(
+          'lcso:ticket:',
+        )
       ) {
-        if (
-          interaction.customId.startsWith(
-            'lcso:ticketform:',
-          )
-        ) {
-          return ticketModal(
-            interaction,
-          );
-        }
+        await startTicket(
+          interaction,
+        );
 
-
-        if (
-          interaction.customId.startsWith(
-            'lcso:applicationform:',
-          )
-        ) {
-          return applicationModal(
-            interaction,
-          );
-        }
-
-
-        if (
-          interaction.customId.startsWith(
-            'lcso:appreviewform:',
-          )
-        ) {
-          return applicationReviewModal(
-            interaction,
-          );
-        }
+        return;
       }
 
-
+      /*
+       * APPLICATION CONTINUE
+       */
       if (
-        interaction.isButton()
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'lcso:application-next:',
+        )
       ) {
-        if (
-          interaction.customId.startsWith(
-            'lcso:appreview:',
-          )
-        ) {
-          return applicationReviewButton(
-            interaction,
-          );
-        }
+        await continueApplication(
+          interaction,
+        );
 
-
-        if (
-          interaction.customId.startsWith(
-            'lcso:ticketclose:',
-          )
-        ) {
-          return ticketClose(
-            interaction,
-          );
-        }
+        return;
       }
-    } catch (
-      error
-    ) {
+
+      /*
+       * APPLICATION REVIEW
+       */
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'lcso:application-review:',
+        )
+      ) {
+        await openApplicationReview(
+          interaction,
+        );
+
+        return;
+      }
+
+      /*
+       * TICKET CLOSE
+       */
+      if (
+        interaction.isButton() &&
+        (
+          interaction.customId.startsWith(
+            'lcso:ticket-close:',
+          ) ||
+          interaction.customId.startsWith(
+            'lcso:ticket:close:',
+          )
+        )
+      ) {
+        await closeTicket(
+          interaction,
+        );
+
+        return;
+      }
+
+      /*
+       * APPLICATION QUESTION PAGE
+       */
+      if (
+        interaction.isModalSubmit() &&
+        interaction.customId.startsWith(
+          'lcso:application-modal:',
+        )
+      ) {
+        await submitApplicationPage(
+          interaction,
+        );
+
+        return;
+      }
+
+      /*
+       * APPLICATION REVIEW MODAL
+       */
+      if (
+        interaction.isModalSubmit() &&
+        interaction.customId.startsWith(
+          'lcso:application-review-modal:',
+        )
+      ) {
+        await submitApplicationReview(
+          interaction,
+        );
+
+        return;
+      }
+
+      /*
+       * TICKET MODAL
+       */
+      if (
+        interaction.isModalSubmit() &&
+        interaction.customId.startsWith(
+          'lcso:ticket-modal:',
+        )
+      ) {
+        await submitTicket(
+          interaction,
+        );
+      }
+    } catch (error) {
       console.error(
         'Portal interaction error:',
         error,
       );
 
+      const content =
+        `❌ ${
+          error instanceof Error
+            ? error.message
+            : 'Something went wrong.'
+        }`;
 
       if (
-        interaction.deferred ||
-        interaction.replied
+        interaction.replied ||
+        interaction.deferred
       ) {
         await interaction
           .followUp({
-            content:
-              `Something went wrong: ${error.message}`,
-
-            ephemeral:
-              true,
+            content,
+            ephemeral: true,
           })
-          .catch(
-            () => null,
-          );
+          .catch(() => {});
       } else {
         await interaction
           .reply({
-            content:
-              `Something went wrong: ${error.message}`,
-
-            ephemeral:
-              true,
+            content,
+            ephemeral: true,
           })
-          .catch(
-            () => null,
-          );
+          .catch(() => {});
       }
     }
   },
