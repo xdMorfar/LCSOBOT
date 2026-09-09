@@ -57,9 +57,7 @@ function truncate(
     return 'N/A';
   }
 
-  if (
-    text.length <= maxLength
-  ) {
+  if (text.length <= maxLength) {
     return text;
   }
 
@@ -72,9 +70,7 @@ function truncate(
   )}...`;
 }
 
-function validImageUrl(
-  value,
-) {
+function validImageUrl(value) {
   if (!value) {
     return false;
   }
@@ -85,19 +81,15 @@ function validImageUrl(
     );
 
     return (
-      url.protocol ===
-        'https:' ||
-      url.protocol ===
-        'http:'
+      url.protocol === 'https:' ||
+      url.protocol === 'http:'
     );
   } catch {
     return false;
   }
 }
 
-function normalizeName(
-  value,
-) {
+function normalizeName(value) {
   return String(
     value ?? '',
   )
@@ -105,9 +97,7 @@ function normalizeName(
     .toLowerCase();
 }
 
-function actorLabel(
-  input,
-) {
+function actorLabel(input) {
   if (
     input.actorDiscordId
   ) {
@@ -268,8 +258,7 @@ async function findTextChannel(
 
         return wanted.some(
           (wantedName) =>
-            name ===
-              wantedName ||
+            name === wantedName ||
             name.includes(
               wantedName,
             ),
@@ -421,6 +410,11 @@ export async function canManageStaffActions(
   );
 }
 
+
+/* =========================================================
+   PROMOTION EMBED
+   ========================================================= */
+
 async function sendPromotionPost(
   guild,
   input,
@@ -437,19 +431,17 @@ async function sendPromotionPost(
       ],
     );
 
-  const now =
-    new Date();
+  const now = new Date();
 
   const timestamp =
     Math.floor(
-      now.getTime() /
-        1000,
+      now.getTime() / 1000,
     );
 
   const actor =
     actorLabel(input);
 
-  const mainEmbed =
+  const embed =
     new EmbedBuilder()
       .setColor(
         0x57f287,
@@ -458,38 +450,27 @@ async function sendPromotionPost(
         '🎉 Liberty County Sheriff’s Office | Staff Promotion',
       )
       .setDescription(
-        'The **Liberty County Sheriff’s Office Command Staff** is pleased to recognize your hard work and professionalism with a staff promotion. Continue setting a strong example for the department.',
-      )
-      .addFields(
-        {
-          name:
-            '━━━ Promotion Information ━━━',
-
-          value: [
-            `↳ **Staff Member:** <@${input.memberId}>`,
-            `↳ **Promoted By:** ${actor}`,
-            `↳ **New Rank:** <@&${targetRole.id}>`,
-            `↳ **Reason:** ${truncate(
-              input.reason,
-              700,
-            )}`,
-            `↳ **Notes:** ${truncate(
-              input.notes,
-              700,
-            )}`,
-          ].join('\n'),
-        },
-
-        {
-          name:
-            '🕒 Promoted',
-
-          value:
-            `<t:${timestamp}:F>`,
-
-          inline:
-            false,
-        },
+        [
+          '> The **Liberty County Sheriff’s Office Command Staff** is pleased to recognize your hard work and professionalism with a staff promotion.',
+          '>',
+          '> Continue setting a strong example for the department and representing LCSO to the highest standard.',
+          '',
+          '### ━━━ Promotion Information ━━━',
+          '',
+          `↳ **Staff Member:** <@${input.memberId}>`,
+          `↳ **Promoted By:** ${actor}`,
+          `↳ **New Rank:** <@&${targetRole.id}>`,
+          `↳ **Reason:** ${truncate(
+            input.reason,
+            700,
+          )}`,
+          `↳ **Notes:** ${truncate(
+            input.notes,
+            700,
+          )}`,
+          '',
+          `> 🕒 **Promoted:** <t:${timestamp}:F>`,
+        ].join('\n'),
       )
       .setFooter({
         text:
@@ -503,39 +484,41 @@ async function sendPromotionPost(
     });
 
   if (guildIcon) {
-    mainEmbed.setThumbnail(
+    embed.setThumbnail(
       guildIcon,
     );
   }
 
-  const embeds = [];
-
+  /*
+   * IMPORTANT:
+   *
+   * Banner is now INSIDE THE SAME
+   * embed instead of being a
+   * completely separate embed.
+   */
   if (
     validImageUrl(
       settings.promotionBannerUrl,
     )
   ) {
-    embeds.push(
-      new EmbedBuilder()
-        .setColor(
-          0x57f287,
-        )
-        .setImage(
-          settings.promotionBannerUrl,
-        ),
+    embed.setImage(
+      settings.promotionBannerUrl,
     );
   }
-
-  embeds.push(
-    mainEmbed,
-  );
 
   await channel.send({
     content:
       `📝 **Signed by,** ${actor}`,
 
-    embeds,
+    embeds: [
+      embed,
+    ],
 
+    /*
+     * Don't make Discord ping everyone
+     * when displaying member / role
+     * mentions in the embed.
+     */
     allowedMentions: {
       parse: [],
     },
@@ -543,6 +526,11 @@ async function sendPromotionPost(
 
   return channel;
 }
+
+
+/* =========================================================
+   INFRACTION EMBED
+   ========================================================= */
 
 async function sendInfractionPost(
   guild,
@@ -560,19 +548,17 @@ async function sendInfractionPost(
       ],
     );
 
-  const now =
-    new Date();
+  const now = new Date();
 
   const timestamp =
     Math.floor(
-      now.getTime() /
-        1000,
+      now.getTime() / 1000,
     );
 
   const actor =
     actorLabel(input);
 
-  const mainEmbed =
+  const embed =
     new EmbedBuilder()
       .setColor(
         type === 'Strike'
@@ -583,38 +569,29 @@ async function sendInfractionPost(
         `🛠️ Liberty County Sheriff’s Office | Staff Infraction - ${type}`,
       )
       .setDescription(
-        'The **Liberty County Sheriff’s Office Command Staff** has deemed it necessary to issue an infraction upon you for failing to follow department or community regulations. Please review the Rules & Regulations to avoid further consequences.',
-      )
-      .addFields(
-        {
-          name:
-            '━━━ Infraction Information ━━━',
-
-          value: [
-            `↳ **Staff Member:** <@${input.memberId}>`,
-            `↳ **Handler:** ${actor}`,
-            `↳ **Infraction:** ${type}`,
-            `↳ **Reason:** ${truncate(
-              input.reason,
-              700,
-            )}`,
-            `↳ **Notes:** ${truncate(
-              input.notes,
-              700,
-            )}`,
-          ].join('\n'),
-        },
-
-        {
-          name:
-            '🕒 Issued',
-
-          value:
-            `<t:${timestamp}:F>`,
-
-          inline:
-            false,
-        },
+        [
+          '> The **Liberty County Sheriff’s Office Command Staff** has deemed it necessary to issue an infraction upon you for failing to follow department or community regulations.',
+          '>',
+          '> Please review the **Rules & Regulations** to avoid further consequences.',
+          '',
+          '### ━━━ Infraction Information ━━━',
+          '',
+          `↳ **Staff Member:** <@${input.memberId}>`,
+          `↳ **Handler:** ${actor}`,
+          `↳ **Infraction:** ${type}`,
+          `↳ **Reason:** ${truncate(
+            input.reason,
+            700,
+          )}`,
+          `↳ **Notes:** ${truncate(
+            input.notes,
+            700,
+          )}`,
+          '',
+          'If you believe this infraction was issued incorrectly, please contact Command Staff through the appropriate support channel.',
+          '',
+          `> 🕒 **Issued:** <t:${timestamp}:F>`,
+        ].join('\n'),
       )
       .setFooter({
         text:
@@ -628,40 +605,35 @@ async function sendInfractionPost(
     });
 
   if (guildIcon) {
-    mainEmbed.setThumbnail(
+    embed.setThumbnail(
       guildIcon,
     );
   }
 
-  const embeds = [];
-
+  /*
+   * Same thing here:
+   *
+   * ONE embed.
+   * Banner at the bottom of that
+   * exact embed.
+   */
   if (
     validImageUrl(
       settings.infractionBannerUrl,
     )
   ) {
-    embeds.push(
-      new EmbedBuilder()
-        .setColor(
-          type === 'Strike'
-            ? 0xed4245
-            : 0xf0b232,
-        )
-        .setImage(
-          settings.infractionBannerUrl,
-        ),
+    embed.setImage(
+      settings.infractionBannerUrl,
     );
   }
-
-  embeds.push(
-    mainEmbed,
-  );
 
   await channel.send({
     content:
       `📝 **Signed by,** ${actor}`,
 
-    embeds,
+    embeds: [
+      embed,
+    ],
 
     allowedMentions: {
       parse: [],
@@ -670,6 +642,11 @@ async function sendInfractionPost(
 
   return channel;
 }
+
+
+/* =========================================================
+   PROMOTE MEMBER
+   ========================================================= */
 
 export async function promoteMember(
   client,
@@ -765,11 +742,6 @@ export async function promoteMember(
       ? settings.rankRoleIds
       : [];
 
-  /*
-   * If ranks have been configured in
-   * Server Setup, ONLY those roles
-   * are accepted as department ranks.
-   */
   if (
     configuredRankRoleIds.length >
       0 &&
@@ -782,11 +754,6 @@ export async function promoteMember(
     );
   }
 
-  /*
-   * If the old setup does not contain
-   * rank IDs yet, only allow the known
-   * LCSO rank names.
-   */
   if (
     configuredRankRoleIds.length ===
       0 &&
@@ -1056,6 +1023,11 @@ export async function promoteMember(
   };
 }
 
+
+/* =========================================================
+   ISSUE INFRACTION
+   ========================================================= */
+
 export async function issueInfraction(
   client,
   input,
@@ -1143,11 +1115,6 @@ export async function issueInfraction(
       ? settings.warningRoleId
       : settings.strikeRoleId;
 
-  /*
-   * If it has not been configured on
-   * the dashboard yet, fall back to a
-   * server role named Warning/Strike.
-   */
   const role =
     await findRole(
       guild,
@@ -1296,6 +1263,11 @@ export async function issueInfraction(
   };
 }
 
+
+/* =========================================================
+   DASHBOARD QUEUE
+   ========================================================= */
+
 async function processStaffAction(
   client,
   action,
@@ -1307,7 +1279,7 @@ async function processStaffAction(
     action.type ===
     'PROMOTE_MEMBER'
   ) {
-    await promoteMember(
+    return promoteMember(
       client,
       {
         ...payload,
@@ -1320,15 +1292,13 @@ async function processStaffAction(
           'Dashboard',
       },
     );
-
-    return;
   }
 
   if (
     action.type ===
     'ISSUE_INFRACTION'
   ) {
-    await issueInfraction(
+    return issueInfraction(
       client,
       {
         ...payload,
@@ -1341,8 +1311,6 @@ async function processStaffAction(
           'Dashboard',
       },
     );
-
-    return;
   }
 
   throw new Error(
