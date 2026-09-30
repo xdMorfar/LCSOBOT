@@ -10,6 +10,7 @@ import {
 
 let syncStarted = false;
 let syncRunning = false;
+let indexesCleaned = false;
 
 const FALLBACK_RANK_NAMES = [
   'Cadet',
@@ -47,6 +48,110 @@ function normalizeName(
     .toLowerCase();
 }
 
+
+/* =========================================================
+   CLEAN OLD DEPUTY DATABASE INDEXES
+   ========================================================= */
+
+async function cleanOldDeputyIndexes() {
+  if (indexesCleaned) {
+    return;
+  }
+
+  const db =
+    getDb();
+
+  const collection =
+    db.collection(
+      'deputies',
+    );
+
+  try {
+    const indexes =
+      await collection
+        .indexes()
+        .catch(
+          () => [],
+        );
+
+    const oldBadgeIndex =
+      indexes.find(
+        (index) =>
+          index.name ===
+          'guildId_1_badgeNumber_1',
+      );
+
+    if (oldBadgeIndex) {
+      await collection.dropIndex(
+        'guildId_1_badgeNumber_1',
+      );
+
+      logger.info(
+        'Removed obsolete deputy badgeNumber index',
+      );
+    }
+
+    /*
+     * Discord ID is now the thing
+     * that uniquely identifies
+     * personnel inside a server.
+     */
+    const refreshedIndexes =
+      await collection
+        .indexes()
+        .catch(
+          () => [],
+        );
+
+    const discordIndexExists =
+      refreshedIndexes.some(
+        (index) =>
+          index.name ===
+          'guildId_1_discordId_1',
+      );
+
+    if (!discordIndexExists) {
+      await collection.createIndex(
+        {
+          guildId:
+            1,
+
+          discordId:
+            1,
+        },
+
+        {
+          unique:
+            true,
+
+          name:
+            'guildId_1_discordId_1',
+        },
+      );
+
+      logger.info(
+        'Created deputy Discord ID index',
+      );
+    }
+
+    indexesCleaned =
+      true;
+  } catch (error) {
+    logger.error(
+      `Could not clean deputy indexes: ${
+        error instanceof Error
+          ? error.message
+          : String(error)
+      }`,
+    );
+  }
+}
+
+
+/* =========================================================
+   SETTINGS
+   ========================================================= */
+
 async function getSettings(
   guildId,
 ) {
@@ -60,6 +165,11 @@ async function getSettings(
       })
   ) || {};
 }
+
+
+/* =========================================================
+   FIND MEMBER RANK
+   ========================================================= */
 
 function findMemberRank(
   member,
@@ -81,6 +191,10 @@ function findMemberRank(
           a.position,
       );
 
+  /*
+   * First use configured LCSO
+   * rank roles.
+   */
   if (
     configuredRoleIds.length >
     0
@@ -99,6 +213,9 @@ function findMemberRank(
     }
   }
 
+  /*
+   * Fallback to rank names.
+   */
   for (
     const role of
     memberRoles
@@ -122,6 +239,11 @@ function findMemberRank(
   return null;
 }
 
+
+/* =========================================================
+   CREATE / UPDATE PERSONNEL AUTOMATICALLY
+   ========================================================= */
+
 export async function ensureDeputyForMember(
   guild,
   member,
@@ -133,6 +255,8 @@ export async function ensureDeputyForMember(
   ) {
     return null;
   }
+
+  await cleanOldDeputyIndexes();
 
   const settings =
     await getSettings(
@@ -215,6 +339,15 @@ export async function ensureDeputyForMember(
         updatedAt:
           now,
       },
+
+      /*
+       * Remove old badge-number field
+       * completely if it exists.
+       */
+      $unset: {
+        badgeNumber:
+          '',
+      },
     },
 
     {
@@ -232,9 +365,16 @@ export async function ensureDeputyForMember(
   });
 }
 
+
+/* =========================================================
+   FULL SERVER PERSONNEL SYNC
+   ========================================================= */
+
 export async function syncPersonnelForGuild(
   guild,
 ) {
+  await cleanOldDeputyIndexes();
+
   const settings =
     await getSettings(
       guild.id,
@@ -291,6 +431,11 @@ export async function syncPersonnelForGuild(
   return synced;
 }
 
+
+/* =========================================================
+   SYNC RUNNER
+   ========================================================= */
+
 async function runSync(
   client,
 ) {
@@ -302,6 +447,8 @@ async function runSync(
     true;
 
   try {
+    await cleanOldDeputyIndexes();
+
     const guildId =
       process.env
         .DISCORD_GUILD_ID;
@@ -336,6 +483,11 @@ async function runSync(
       false;
   }
 }
+
+
+/* =========================================================
+   START AUTO SYNC
+   ========================================================= */
 
 export function startPersonnelSync(
   client,
@@ -410,6 +562,11 @@ async function findDiscordCommand(
 
   return null;
 }
+
+
+/* =========================================================
+   REMOVE OLD /DEPUTY ADD COMMAND
+   ========================================================= */
 
 export async function removeDeputyAddCommand(
   client,
