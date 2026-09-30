@@ -52,7 +52,9 @@ async function getSettings(
 ) {
   return (
     await getDb()
-      .collection('settings')
+      .collection(
+        'settings',
+      )
       .findOne({
         guildId,
       })
@@ -70,7 +72,8 @@ function findMemberRank(
       .filter(
         (role) =>
           role.id !==
-          member.guild.roles.everyone.id,
+          member.guild.roles
+            .everyone.id,
       )
       .sort(
         (a, b) =>
@@ -78,10 +81,6 @@ function findMemberRank(
           a.position,
       );
 
-  /*
-   * Preferred:
-   * Roles configured as LCSO ranks.
-   */
   if (
     configuredRoleIds.length >
     0
@@ -100,10 +99,6 @@ function findMemberRank(
     }
   }
 
-  /*
-   * Fallback:
-   * Standard rank names.
-   */
   for (
     const role of
     memberRoles
@@ -199,9 +194,6 @@ export async function ensureDeputyForMember(
 
         totalActivityMinutes:
           0,
-
-        status:
-          'Active',
       },
 
       $set: {
@@ -216,6 +208,9 @@ export async function ensureDeputyForMember(
 
         rank:
           rankRole.name,
+
+        status:
+          'Active',
 
         updatedAt:
           now,
@@ -252,9 +247,6 @@ export async function syncPersonnelForGuild(
       ? settings.rankRoleIds
       : [];
 
-  /*
-   * Fetch current Discord members.
-   */
   await guild.members
     .fetch()
     .catch(
@@ -306,11 +298,13 @@ async function runSync(
     return;
   }
 
-  syncRunning = true;
+  syncRunning =
+    true;
 
   try {
     const guildId =
-      process.env.DISCORD_GUILD_ID;
+      process.env
+        .DISCORD_GUILD_ID;
 
     if (!guildId) {
       throw new Error(
@@ -338,7 +332,8 @@ async function runSync(
       }`,
     );
   } finally {
-    syncRunning = false;
+    syncRunning =
+      false;
   }
 }
 
@@ -349,24 +344,24 @@ export function startPersonnelSync(
     return;
   }
 
-  syncStarted = true;
+  syncStarted =
+    true;
 
   logger.info(
     'LCSO personnel auto sync started',
   );
 
-  /*
-   * Sync immediately.
-   */
-  void runSync(client);
+  void runSync(
+    client,
+  );
 
-  /*
-   * Keep the roster synced every minute.
-   */
   setInterval(
     () => {
-      void runSync(client);
+      void runSync(
+        client,
+      );
     },
+
     60 * 1000,
   );
 }
@@ -381,27 +376,20 @@ async function findDiscordCommand(
   guild,
   name,
 ) {
-  /*
-   * Your bot normally uses guild
-   * commands, so check those first.
-   */
   const guildCommands =
     await guild.commands.fetch();
 
   const guildCommand =
     guildCommands.find(
       (command) =>
-        command.name === name,
+        command.name ===
+        name,
     );
 
   if (guildCommand) {
     return guildCommand;
   }
 
-  /*
-   * Fallback in case the command was
-   * registered globally.
-   */
   if (
     client.application
   ) {
@@ -427,7 +415,8 @@ export async function removeDeputyAddCommand(
   client,
 ) {
   const guildId =
-    process.env.DISCORD_GUILD_ID;
+    process.env
+      .DISCORD_GUILD_ID;
 
   if (!guildId) {
     return;
