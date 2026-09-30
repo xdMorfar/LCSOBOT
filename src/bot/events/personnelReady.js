@@ -18,20 +18,13 @@ export default {
   once:
     true,
 
-  async execute(client) {
-    /*
-     * Automatically keep the personnel
-     * database synced with the actual
-     * LCSO rank roles in Discord.
-     */
+  async execute(
+    client,
+  ) {
     startPersonnelSync(
       client,
     );
 
-    /*
-     * Remove the unnecessary
-     * /deputy add subcommand.
-     */
     try {
       await removeDeputyAddCommand(
         client,
