@@ -42,7 +42,9 @@ function flattenOptions(
   }
 
   for (const option of options) {
-    output.push(option);
+    output.push(
+      option,
+    );
 
     if (
       Array.isArray(
@@ -64,7 +66,8 @@ function allOptions(
   interaction,
 ) {
   return flattenOptions(
-    interaction.options?.data || [],
+    interaction.options?.data ||
+    [],
   );
 }
 
@@ -73,7 +76,9 @@ function findUserId(
   interaction,
 ) {
   const options =
-    allOptions(interaction);
+    allOptions(
+      interaction,
+    );
 
   const names = [
     'member',
@@ -96,31 +101,15 @@ function findUserId(
       return (
         option.user?.id ||
         String(
-          option.value || '',
+          option.value ||
+          '',
         ) ||
         null
       );
     }
   }
 
-  const fallback =
-    options.find(
-      (item) =>
-        item.type ===
-        ApplicationCommandOptionType.User,
-    );
-
-  if (!fallback) {
-    return null;
-  }
-
-  return (
-    fallback.user?.id ||
-    String(
-      fallback.value || '',
-    ) ||
-    null
-  );
+  return null;
 }
 
 
@@ -132,7 +121,9 @@ function findRole(
   ],
 ) {
   const options =
-    allOptions(interaction);
+    allOptions(
+      interaction,
+    );
 
   for (const name of names) {
     const option =
@@ -146,9 +137,8 @@ function findRole(
     if (option) {
       return (
         option.role ||
-        interaction.guild?.roles
-          ?.cache
-          ?.get(
+        interaction.guild
+          ?.roles.cache.get(
             String(
               option.value,
             ),
@@ -158,28 +148,7 @@ function findRole(
     }
   }
 
-  const fallback =
-    options.find(
-      (item) =>
-        item.type ===
-        ApplicationCommandOptionType.Role,
-    );
-
-  if (!fallback) {
-    return null;
-  }
-
-  return (
-    fallback.role ||
-    interaction.guild?.roles
-      ?.cache
-      ?.get(
-        String(
-          fallback.value,
-        ),
-      ) ||
-    null
-  );
+  return null;
 }
 
 
@@ -188,7 +157,9 @@ function findString(
   names,
 ) {
   const options =
-    allOptions(interaction);
+    allOptions(
+      interaction,
+    );
 
   for (const name of names) {
     const option =
@@ -202,7 +173,8 @@ function findString(
     if (
       option?.value !==
       undefined &&
-      option?.value !== null
+      option?.value !==
+      null
     ) {
       return String(
         option.value,
@@ -219,9 +191,11 @@ function getSubcommand(
 ) {
   try {
     return (
-      interaction.options.getSubcommand(
-        false,
-      ) || null
+      interaction.options
+        .getSubcommand(
+          false,
+        ) ||
+      null
     );
   } catch {
     return null;
@@ -254,6 +228,7 @@ async function handlePromotion(
     });
   }
 
+
   const memberId =
     findUserId(
       interaction,
@@ -285,19 +260,22 @@ async function handlePromotion(
       ],
     );
 
+
   if (!memberId) {
     return interaction.editReply({
       content:
-        '❌ Select the staff member you want to promote.',
+        '❌ Select a staff member.',
     });
   }
+
 
   if (!rank) {
     return interaction.editReply({
       content:
-        '❌ Select the Discord rank role they should be promoted to.',
+        '❌ Select the Discord role they should be promoted to.',
     });
   }
+
 
   if (!reason) {
     return interaction.editReply({
@@ -305,6 +283,7 @@ async function handlePromotion(
         '❌ A promotion reason is required.',
     });
   }
+
 
   try {
     const result =
@@ -316,6 +295,9 @@ async function handlePromotion(
 
           memberId,
 
+          /*
+           * Actual Discord role.
+           */
           targetRoleId:
             rank.id,
 
@@ -340,9 +322,10 @@ async function handlePromotion(
         },
       );
 
+
     await interaction.editReply({
       content:
-        `✅ **Promotion completed.** <@${memberId}> now has <@&${result.roleId}> and the promotion was posted in <#${result.channelId}>.`,
+        `✅ <@${memberId}> was promoted to <@&${result.roleId}>. The Discord role has been applied and the promotion was posted in <#${result.channelId}>.`,
     });
 
   } catch (error) {
@@ -351,27 +334,162 @@ async function handlePromotion(
       error,
     );
 
-    logger.error(
-      'Promotion command failed',
-      {
-        userId:
-          interaction.user.id,
-
-        memberId,
-
-        roleId:
-          rank?.id || null,
-
-        error:
-          error?.stack ||
-          error?.message ||
-          String(error),
-      },
-    );
 
     await interaction.editReply({
       content:
         `❌ **Promotion failed:** ${
+          error instanceof Error
+            ? error.message
+            : String(error)
+        }`,
+    });
+  }
+}
+
+
+/* =========================================================
+   DEMOTION
+   ========================================================= */
+
+async function handleDemotion(
+  interaction,
+) {
+  await interaction.deferReply({
+    flags:
+      MessageFlags.Ephemeral,
+  });
+
+
+  const allowed =
+    await canManageStaffActions(
+      interaction.guild,
+      interaction.user.id,
+    );
+
+
+  if (!allowed) {
+    return interaction.editReply({
+      content:
+        '❌ You do not have permission to demote LCSO personnel.',
+    });
+  }
+
+
+  const memberId =
+    findUserId(
+      interaction,
+    );
+
+
+  /*
+   * THIS IS NOW A REAL
+   * DISCORD ROLE OBJECT.
+   */
+  const rank =
+    findRole(
+      interaction,
+      [
+        'rank',
+      ],
+    );
+
+
+  const reason =
+    findString(
+      interaction,
+      [
+        'reason',
+      ],
+    );
+
+
+  const notes =
+    findString(
+      interaction,
+      [
+        'notes',
+        'note',
+      ],
+    );
+
+
+  if (!memberId) {
+    return interaction.editReply({
+      content:
+        '❌ Select a staff member.',
+    });
+  }
+
+
+  if (!rank) {
+    return interaction.editReply({
+      content:
+        '❌ Select the Discord rank they should be demoted to.',
+    });
+  }
+
+
+  if (!reason) {
+    return interaction.editReply({
+      content:
+        '❌ A demotion reason is required.',
+    });
+  }
+
+
+  try {
+    const result =
+      await issueInfraction(
+        interaction.client,
+        {
+          guildId:
+            interaction.guildId,
+
+          memberId,
+
+          infractionType:
+            'Demotion',
+
+          targetRoleId:
+            rank.id,
+
+          targetRoleName:
+            rank.name,
+
+          reason,
+
+          notes,
+
+          actorDiscordId:
+            interaction.user.id,
+
+          actorName:
+            interaction.member
+              ?.displayName ||
+            interaction.user
+              .username,
+
+          source:
+            '/promotion demote',
+        },
+      );
+
+
+    await interaction.editReply({
+      content:
+        `✅ <@${memberId}> was demoted to <@&${rank.id}>. Their old LCSO rank was removed and the new Discord rank was applied.`,
+    });
+
+  } catch (error) {
+    console.error(
+      '[LCSO DEMOTION ERROR]',
+      error,
+    );
+
+
+    await interaction.editReply({
+      content:
+        `❌ **Demotion failed:** ${
           error instanceof Error
             ? error.message
             : String(error)
@@ -393,11 +511,13 @@ async function handleInfraction(
       MessageFlags.Ephemeral,
   });
 
+
   const allowed =
     await canManageStaffActions(
       interaction.guild,
       interaction.user.id,
     );
+
 
   if (!allowed) {
     return interaction.editReply({
@@ -406,10 +526,12 @@ async function handleInfraction(
     });
   }
 
+
   const memberId =
     findUserId(
       interaction,
     );
+
 
   const type =
     findString(
@@ -420,6 +542,7 @@ async function handleInfraction(
       ],
     );
 
+
   const reason =
     findString(
       interaction,
@@ -427,6 +550,7 @@ async function handleInfraction(
         'reason',
       ],
     );
+
 
   const notes =
     findString(
@@ -437,9 +561,7 @@ async function handleInfraction(
       ],
     );
 
-  /*
-   * Used only for Demotion.
-   */
+
   const rank =
     findRole(
       interaction,
@@ -448,6 +570,7 @@ async function handleInfraction(
       ],
     );
 
+
   if (!memberId) {
     return interaction.editReply({
       content:
@@ -455,19 +578,18 @@ async function handleInfraction(
     });
   }
 
+
   const normalizedType =
     type.toLowerCase();
 
-  /*
-   * IMPORTANT:
-   * All four types are supported.
-   */
+
   const validTypes = [
     'warning',
     'strike',
     'demotion',
     'termination',
   ];
+
 
   if (
     !validTypes.includes(
@@ -476,21 +598,19 @@ async function handleInfraction(
   ) {
     return interaction.editReply({
       content:
-        '❌ The infraction must be **Warning**, **Strike**, **Demotion** or **Termination**.',
+        '❌ Select **Warning**, **Strike**, **Demotion** or **Termination**.',
     });
   }
+
 
   if (!reason) {
     return interaction.editReply({
       content:
-        '❌ An infraction reason is required.',
+        '❌ A reason is required.',
     });
   }
 
-  /*
-   * Demotion requires a target
-   * Discord role.
-   */
+
   if (
     normalizedType ===
       'demotion' &&
@@ -498,9 +618,10 @@ async function handleInfraction(
   ) {
     return interaction.editReply({
       content:
-        '❌ When using **Demotion**, select the lower Discord rank in the **rank** field.',
+        '❌ Select the Discord rank they should be demoted to.',
     });
   }
+
 
   try {
     const result =
@@ -524,18 +645,13 @@ async function handleInfraction(
                   ? 'Demotion'
                   : 'Termination',
 
-          /*
-           * Null for Warning,
-           * Strike and Termination.
-           *
-           * Real Discord role for
-           * Demotion.
-           */
           targetRoleId:
-            rank?.id || null,
+            rank?.id ||
+            null,
 
           targetRoleName:
-            rank?.name || null,
+            rank?.name ||
+            null,
 
           reason,
 
@@ -555,32 +671,37 @@ async function handleInfraction(
         },
       );
 
-    let response =
+
+    let message =
       `✅ **${result.type} issued.**`;
+
 
     if (
       result.type ===
         'Demotion' &&
       result.roleId
     ) {
-      response +=
+      message +=
         ` <@${memberId}> was demoted to <@&${result.roleId}>.`;
     }
+
 
     if (
       result.type ===
       'Termination'
     ) {
-      response +=
+      message +=
         ` LCSO rank roles were removed from <@${memberId}>.`;
     }
 
-    response +=
+
+    message +=
       ` Posted in <#${result.channelId}>.`;
+
 
     await interaction.editReply({
       content:
-        response,
+        message,
     });
 
   } catch (error) {
@@ -589,25 +710,6 @@ async function handleInfraction(
       error,
     );
 
-    logger.error(
-      'Infraction command failed',
-      {
-        userId:
-          interaction.user.id,
-
-        memberId,
-
-        type,
-
-        rankId:
-          rank?.id || null,
-
-        error:
-          error?.stack ||
-          error?.message ||
-          String(error),
-      },
-    );
 
     await interaction.editReply({
       content:
@@ -622,7 +724,7 @@ async function handleInfraction(
 
 
 /* =========================================================
-   STAFF COMMAND ROUTING
+   STAFF ROUTING
    ========================================================= */
 
 async function handleStaffCommand(
@@ -632,6 +734,7 @@ async function handleStaffCommand(
     getSubcommand(
       interaction,
     );
+
 
   if (
     interaction.commandName ===
@@ -646,6 +749,21 @@ async function handleStaffCommand(
     return true;
   }
 
+
+  if (
+    interaction.commandName ===
+      'promotion' &&
+    subcommand ===
+      'demote'
+  ) {
+    await handleDemotion(
+      interaction,
+    );
+
+    return true;
+  }
+
+
   if (
     interaction.commandName ===
       'infraction' &&
@@ -659,6 +777,7 @@ async function handleStaffCommand(
     return true;
   }
 
+
   return false;
 }
 
@@ -670,6 +789,7 @@ async function handleStaffCommand(
 export default {
   name:
     Events.InteractionCreate,
+
 
   async execute(
     interaction,
@@ -695,36 +815,34 @@ export default {
           });
         }
 
-        /*
-         * Handle our new staff
-         * commands FIRST.
-         */
+
         const handled =
           await handleStaffCommand(
             interaction,
           );
 
+
         if (handled) {
           return;
         }
 
-        /*
-         * Everything else uses
-         * the normal command loader.
-         */
+
         const command =
           context.commands.get(
             interaction.commandName,
           );
 
+
         if (!command) {
           return;
         }
+
 
         await command.execute(
           interaction,
           context,
         );
+
 
         await sendLog(
           interaction.guild,
@@ -737,8 +855,10 @@ export default {
           () => null,
         );
 
+
         return;
       }
+
 
       if (
         interaction.isButton()
@@ -750,6 +870,7 @@ export default {
 
         return;
       }
+
 
       if (
         interaction.isModalSubmit()
@@ -764,35 +885,10 @@ export default {
 
     } catch (error) {
       console.error(
-        '\n================================',
-      );
-
-      console.error(
         '[LCSO INTERACTION ERROR]',
-      );
-
-      console.error(
-        'Command:',
-        interaction.commandName,
-      );
-
-      console.error(
-        'Custom ID:',
-        interaction.customId,
-      );
-
-      console.error(
-        'User:',
-        interaction.user?.id,
-      );
-
-      console.error(
         error,
       );
 
-      console.error(
-        '================================\n',
-      );
 
       logger.error(
         'Interaction error',
@@ -813,6 +909,7 @@ export default {
         },
       );
 
+
       const payload = {
         flags:
           MessageFlags.Ephemeral,
@@ -824,6 +921,7 @@ export default {
           ),
         ],
       };
+
 
       if (
         interaction.deferred
