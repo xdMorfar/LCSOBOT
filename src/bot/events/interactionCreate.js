@@ -28,6 +28,11 @@ import {
   promoteMember,
 } from '../../services/staffActionService.js';
 
+
+/* =========================================================
+   OPTION HELPERS
+   ========================================================= */
+
 function flattenOptions(
   options,
   output = [],
@@ -36,13 +41,8 @@ function flattenOptions(
     return output;
   }
 
-  for (
-    const option of
-    options
-  ) {
-    output.push(
-      option,
-    );
+  for (const option of options) {
+    output.push(option);
 
     if (
       Array.isArray(
@@ -59,22 +59,21 @@ function flattenOptions(
   return output;
 }
 
+
 function allOptions(
   interaction,
 ) {
   return flattenOptions(
-    interaction.options?.data ||
-    [],
+    interaction.options?.data || [],
   );
 }
+
 
 function findUserId(
   interaction,
 ) {
   const options =
-    allOptions(
-      interaction,
-    );
+    allOptions(interaction);
 
   const names = [
     'member',
@@ -84,15 +83,11 @@ function findUserId(
     'deputy',
   ];
 
-  for (
-    const name of
-    names
-  ) {
+  for (const name of names) {
     const option =
       options.find(
         (item) =>
-          item.name ===
-            name &&
+          item.name === name &&
           item.type ===
             ApplicationCommandOptionType.User,
       );
@@ -101,15 +96,33 @@ function findUserId(
       return (
         option.user?.id ||
         String(
-          option.value ||
-          '',
-        )
+          option.value || '',
+        ) ||
+        null
       );
     }
   }
 
-  return null;
+  const fallback =
+    options.find(
+      (item) =>
+        item.type ===
+        ApplicationCommandOptionType.User,
+    );
+
+  if (!fallback) {
+    return null;
+  }
+
+  return (
+    fallback.user?.id ||
+    String(
+      fallback.value || '',
+    ) ||
+    null
+  );
 }
+
 
 function findRole(
   interaction,
@@ -119,19 +132,13 @@ function findRole(
   ],
 ) {
   const options =
-    allOptions(
-      interaction,
-    );
+    allOptions(interaction);
 
-  for (
-    const name of
-    names
-  ) {
+  for (const name of names) {
     const option =
       options.find(
         (item) =>
-          item.name ===
-            name &&
+          item.name === name &&
           item.type ===
             ApplicationCommandOptionType.Role,
       );
@@ -139,8 +146,9 @@ function findRole(
     if (option) {
       return (
         option.role ||
-        interaction.guild
-          ?.roles.cache.get(
+        interaction.guild?.roles
+          ?.cache
+          ?.get(
             String(
               option.value,
             ),
@@ -150,34 +158,51 @@ function findRole(
     }
   }
 
-  return null;
+  const fallback =
+    options.find(
+      (item) =>
+        item.type ===
+        ApplicationCommandOptionType.Role,
+    );
+
+  if (!fallback) {
+    return null;
+  }
+
+  return (
+    fallback.role ||
+    interaction.guild?.roles
+      ?.cache
+      ?.get(
+        String(
+          fallback.value,
+        ),
+      ) ||
+    null
+  );
 }
+
 
 function findString(
   interaction,
   names,
 ) {
   const options =
-    allOptions(
-      interaction,
-    );
+    allOptions(interaction);
 
-  for (
-    const name of
-    names
-  ) {
+  for (const name of names) {
     const option =
       options.find(
         (item) =>
-          item.name ===
-            name &&
+          item.name === name &&
           item.type ===
             ApplicationCommandOptionType.String,
       );
 
     if (
       option?.value !==
-        undefined
+      undefined &&
+      option?.value !== null
     ) {
       return String(
         option.value,
@@ -188,17 +213,21 @@ function findString(
   return '';
 }
 
+
 function getSubcommand(
   interaction,
 ) {
   try {
-    return interaction.options.getSubcommand(
-      false,
+    return (
+      interaction.options.getSubcommand(
+        false,
+      ) || null
     );
   } catch {
     return null;
   }
 }
+
 
 /* =========================================================
    PROMOTION
@@ -256,14 +285,24 @@ async function handlePromotion(
       ],
     );
 
-  if (
-    !memberId ||
-    !rank ||
-    !reason
-  ) {
+  if (!memberId) {
     return interaction.editReply({
       content:
-        '❌ Member, rank and reason are required.',
+        '❌ Select the staff member you want to promote.',
+    });
+  }
+
+  if (!rank) {
+    return interaction.editReply({
+      content:
+        '❌ Select the Discord rank role they should be promoted to.',
+    });
+  }
+
+  if (!reason) {
+    return interaction.editReply({
+      content:
+        '❌ A promotion reason is required.',
     });
   }
 
@@ -303,12 +342,31 @@ async function handlePromotion(
 
     await interaction.editReply({
       content:
-        `✅ Promotion completed and posted in <#${result.channelId}>.`,
+        `✅ **Promotion completed.** <@${memberId}> now has <@&${result.roleId}> and the promotion was posted in <#${result.channelId}>.`,
     });
+
   } catch (error) {
     console.error(
       '[LCSO PROMOTION ERROR]',
       error,
+    );
+
+    logger.error(
+      'Promotion command failed',
+      {
+        userId:
+          interaction.user.id,
+
+        memberId,
+
+        roleId:
+          rank?.id || null,
+
+        error:
+          error?.stack ||
+          error?.message ||
+          String(error),
+      },
     );
 
     await interaction.editReply({
@@ -321,6 +379,7 @@ async function handlePromotion(
     });
   }
 }
+
 
 /* =========================================================
    INFRACTION
@@ -378,6 +437,9 @@ async function handleInfraction(
       ],
     );
 
+  /*
+   * Used only for Demotion.
+   */
   const rank =
     findRole(
       interaction,
@@ -386,13 +448,6 @@ async function handleInfraction(
       ],
     );
 
-  const validTypes = [
-    'warning',
-    'strike',
-    'demotion',
-    'termination',
-  ];
-
   if (!memberId) {
     return interaction.editReply({
       content:
@@ -400,32 +455,50 @@ async function handleInfraction(
     });
   }
 
+  const normalizedType =
+    type.toLowerCase();
+
+  /*
+   * IMPORTANT:
+   * All four types are supported.
+   */
+  const validTypes = [
+    'warning',
+    'strike',
+    'demotion',
+    'termination',
+  ];
+
   if (
     !validTypes.includes(
-      type.toLowerCase(),
+      normalizedType,
     )
   ) {
     return interaction.editReply({
       content:
-        '❌ Type must be Warning, Strike, Demotion or Termination.',
+        '❌ The infraction must be **Warning**, **Strike**, **Demotion** or **Termination**.',
     });
   }
 
   if (!reason) {
     return interaction.editReply({
       content:
-        '❌ A reason is required.',
+        '❌ An infraction reason is required.',
     });
   }
 
+  /*
+   * Demotion requires a target
+   * Discord role.
+   */
   if (
-    type.toLowerCase() ===
+    normalizedType ===
       'demotion' &&
     !rank
   ) {
     return interaction.editReply({
       content:
-        '❌ When selecting **Demotion**, you must also select the new lower rank.',
+        '❌ When using **Demotion**, select the lower Discord rank in the **rank** field.',
     });
   }
 
@@ -440,15 +513,29 @@ async function handleInfraction(
           memberId,
 
           infractionType:
-            type,
+            normalizedType ===
+              'warning'
+              ? 'Warning'
+              : normalizedType ===
+                  'strike'
+                ? 'Strike'
+                : normalizedType ===
+                    'demotion'
+                  ? 'Demotion'
+                  : 'Termination',
 
+          /*
+           * Null for Warning,
+           * Strike and Termination.
+           *
+           * Real Discord role for
+           * Demotion.
+           */
           targetRoleId:
-            rank?.id ||
-            null,
+            rank?.id || null,
 
           targetRoleName:
-            rank?.name ||
-            null,
+            rank?.name || null,
 
           reason,
 
@@ -468,14 +555,58 @@ async function handleInfraction(
         },
       );
 
+    let response =
+      `✅ **${result.type} issued.**`;
+
+    if (
+      result.type ===
+        'Demotion' &&
+      result.roleId
+    ) {
+      response +=
+        ` <@${memberId}> was demoted to <@&${result.roleId}>.`;
+    }
+
+    if (
+      result.type ===
+      'Termination'
+    ) {
+      response +=
+        ` LCSO rank roles were removed from <@${memberId}>.`;
+    }
+
+    response +=
+      ` Posted in <#${result.channelId}>.`;
+
     await interaction.editReply({
       content:
-        `✅ **${result.type}** issued and posted in <#${result.channelId}>.`,
+        response,
     });
+
   } catch (error) {
     console.error(
       '[LCSO INFRACTION ERROR]',
       error,
+    );
+
+    logger.error(
+      'Infraction command failed',
+      {
+        userId:
+          interaction.user.id,
+
+        memberId,
+
+        type,
+
+        rankId:
+          rank?.id || null,
+
+        error:
+          error?.stack ||
+          error?.message ||
+          String(error),
+      },
     );
 
     await interaction.editReply({
@@ -488,6 +619,11 @@ async function handleInfraction(
     });
   }
 }
+
+
+/* =========================================================
+   STAFF COMMAND ROUTING
+   ========================================================= */
 
 async function handleStaffCommand(
   interaction,
@@ -526,8 +662,9 @@ async function handleStaffCommand(
   return false;
 }
 
+
 /* =========================================================
-   MAIN INTERACTION HANDLER
+   MAIN INTERACTION EVENT
    ========================================================= */
 
 export default {
@@ -558,6 +695,10 @@ export default {
           });
         }
 
+        /*
+         * Handle our new staff
+         * commands FIRST.
+         */
         const handled =
           await handleStaffCommand(
             interaction,
@@ -567,6 +708,10 @@ export default {
           return;
         }
 
+        /*
+         * Everything else uses
+         * the normal command loader.
+         */
         const command =
           context.commands.get(
             interaction.commandName,
@@ -613,11 +758,40 @@ export default {
           interaction,
           context,
         );
+
+        return;
       }
+
     } catch (error) {
       console.error(
+        '\n================================',
+      );
+
+      console.error(
         '[LCSO INTERACTION ERROR]',
+      );
+
+      console.error(
+        'Command:',
+        interaction.commandName,
+      );
+
+      console.error(
+        'Custom ID:',
+        interaction.customId,
+      );
+
+      console.error(
+        'User:',
+        interaction.user?.id,
+      );
+
+      console.error(
         error,
+      );
+
+      console.error(
+        '================================\n',
       );
 
       logger.error(
@@ -661,6 +835,7 @@ export default {
           .catch(
             () => null,
           );
+
       } else if (
         interaction.replied
       ) {
@@ -671,6 +846,7 @@ export default {
           .catch(
             () => null,
           );
+
       } else {
         await interaction
           .reply(
