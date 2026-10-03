@@ -5,6 +5,7 @@ import {
   ChannelType,
   EmbedBuilder,
   Events,
+  MessageFlags,
   ModalBuilder,
   PermissionFlagsBits,
   TextInputBuilder,
@@ -12,266 +13,94 @@ import {
 } from 'discord.js';
 
 import mongoose from 'mongoose';
+import { logger } from '../../utils/logger.js';
 
-function getDb() {
-  const db = mongoose.connection.db;
+const QUESTIONS_PER_PAGE = 5;
 
-  if (!db) {
-    throw new Error(
-      'MongoDB is not connected.',
-    );
+function db() {
+  const database = mongoose.connection.db;
+
+  if (!database) {
+    throw new Error('MongoDB is not connected.');
   }
 
-  return db;
+  return database;
+}
+
+function col(name) {
+  return db().collection(name);
 }
 
 function objectId(value) {
-  if (
-    !mongoose.Types.ObjectId.isValid(
-      String(value),
-    )
-  ) {
+  if (!value || !mongoose.Types.ObjectId.isValid(String(value))) {
     return null;
   }
 
-  return new mongoose.Types.ObjectId(
-    String(value),
-  );
+  return new mongoose.Types.ObjectId(String(value));
 }
 
-function truncate(
-  value,
-  length,
-) {
-  const text = String(
-    value ?? '',
-  );
+function truncate(value, max = 1000) {
+  const text = String(value ?? '').trim();
 
-  if (
-    text.length <= length
-  ) {
-    return text;
+  if (!text) {
+    return 'N/A';
   }
 
-  return `${text.slice(
-    0,
-    Math.max(
-      0,
-      length - 3,
-    ),
-  )}...`;
+  return text.length > max
+    ? `${text.slice(0, max - 3)}...`
+    : text;
 }
 
-function safeName(value) {
-  return String(
-    value || 'user',
-  )
+function cleanName(value) {
+  return String(value || 'ticket')
     .toLowerCase()
-    .replace(
-      /[^a-z0-9-]/g,
-      '-',
-    )
-    .replace(
-      /-+/g,
-      '-',
-    )
-    .replace(
-      /^-+|-+$/g,
-      '',
-    )
-    .slice(0, 40);
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 70);
 }
 
-function choiceKey(
-  choice,
-  index,
-) {
+function getQuestionText(question, index) {
+  if (typeof question === 'string') {
+    return question.trim();
+  }
+
   return String(
-    choice?.key ||
-      choice?.value ||
-      choice?.id ||
-      choice?.label ||
-      `option-${index + 1}`,
+    question?.question ||
+    question?.text ||
+    question?.label ||
+    `Question ${index + 1}`,
+  ).trim();
+}
+
+function applicationModalTitle(panel, page, pages) {
+  const base =
+    String(panel.title || 'LCSO Entry Application')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const suffix =
+    pages > 1
+      ? ` ${page + 1}/${pages}`
+      : '';
+
+  return `${base}${suffix}`.slice(0, 45);
+}
+
+function questionPlaceholder(question) {
+  return truncate(
+    question,
+    100,
   );
 }
 
-function findChoice(
-  choices,
-  selected,
-) {
-  return choices.find(
-    (choice, index) =>
-      choiceKey(
-        choice,
-        index,
-      ) === selected,
-  );
-}
-
-function getApplicationChoices(
-  panel,
-) {
-  if (
-    Array.isArray(
-      panel?.applications,
-    )
-  ) {
-    return panel.applications;
-  }
-
-  if (
-    Array.isArray(
-      panel?.types,
-    )
-  ) {
-    return panel.types;
-  }
-
-  if (
-    Array.isArray(
-      panel?.options,
-    )
-  ) {
-    return panel.options;
-  }
-
-  return [];
-}
-
-function getTicketChoices(
-  panel,
-) {
-  if (
-    Array.isArray(
-      panel?.ticketTypes,
-    )
-  ) {
-    return panel.ticketTypes;
-  }
-
-  if (
-    Array.isArray(
-      panel?.types,
-    )
-  ) {
-    return panel.types;
-  }
-
-  if (
-    Array.isArray(
-      panel?.options,
-    )
-  ) {
-    return panel.options;
-  }
-
-  return [];
-}
-
-function buildApplicationModal(
-  draft,
-  page,
-) {
-  const questions =
-    Array.isArray(
-      draft.questions,
-    )
-      ? draft.questions
-      : [];
-
-  const start =
-    page * 5;
-
-  const currentQuestions =
-    questions.slice(
-      start,
-      start + 5,
-    );
-
-  const modal =
-    new ModalBuilder()
-      .setCustomId(
-        `lcso:application-modal:${draft._id}:${page}`,
-      )
-      .setTitle(
-        truncate(
-          `${draft.typeLabel || 'Application'} ${page + 1}`,
-          45,
-        ),
-      );
-
-  for (
-    let localIndex = 0;
-    localIndex <
-    currentQuestions.length;
-    localIndex += 1
-  ) {
-    const absoluteIndex =
-      start + localIndex;
-
-    const question =
-      String(
-        currentQuestions[
-          localIndex
-        ] || '',
-      );
-
-    const input =
-      new TextInputBuilder()
-        .setCustomId(
-          `q${absoluteIndex}`,
-        )
-        .setLabel(
-          truncate(
-            question ||
-              `Question ${absoluteIndex + 1}`,
-            45,
-          ),
-        )
-        .setStyle(
-          TextInputStyle.Paragraph,
-        )
-        .setRequired(true)
-        .setMaxLength(2000);
-
-    if (
-      question.length > 45
-    ) {
-      input.setPlaceholder(
-        truncate(
-          question,
-          100,
-        ),
-      );
-    }
-
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(
-        input,
-      ),
-    );
-  }
-
-  return modal;
-}
-
-async function isStaff(
-  interaction,
-) {
-  if (!interaction.guild) {
+async function canReview(interaction) {
+  if (!interaction.inGuild()) {
     return false;
   }
 
   const member =
-    await interaction.guild.members
-      .fetch(
-        interaction.user.id,
-      )
-      .catch(() => null);
-
-  if (!member) {
-    return false;
-  }
+    interaction.member;
 
   if (
     member.permissions.has(
@@ -288,197 +117,360 @@ async function isStaff(
   }
 
   const settings =
-    await getDb()
-      .collection('settings')
-      .findOne({
-        guildId:
-          interaction.guild.id,
-      });
+    await col('settings').findOne({
+      guildId:
+        interaction.guildId,
+    });
 
-  const roleIds =
+  const adminRoleIds =
     Array.isArray(
       settings?.dashboardAdminRoleIds,
     )
       ? settings.dashboardAdminRoleIds
       : [];
 
-  return roleIds.some(
-    (roleId) =>
-      member.roles.cache.has(
-        roleId,
+  if (
+    adminRoleIds.some(
+      (roleId) =>
+        member.roles.cache.has(
+          roleId,
+        ),
+    )
+  ) {
+    return true;
+  }
+
+  const staffRanks = [
+    'Corporal',
+    'Sergeant',
+    'Lieutenant',
+    'Captain',
+    'Assistant Sheriff',
+    'Undersheriff',
+    'Sheriff',
+  ];
+
+  return member.roles.cache.some(
+    (role) =>
+      staffRanks.some(
+        (rank) =>
+          role.name.toLowerCase() ===
+          rank.toLowerCase(),
       ),
   );
 }
 
-/* =========================================================
-   APPLICATIONS
-   ========================================================= */
-
-async function startApplication(
-  interaction,
-) {
-  const prefix =
-    'lcso:application:';
-
-  const panelId =
-    interaction.customId.slice(
-      prefix.length,
-    );
-
-  const oid =
+async function getApplicationPanel(panelId) {
+  const id =
     objectId(panelId);
 
-  if (!oid) {
-    await interaction.reply({
-      content:
-        '❌ Application panel could not be found.',
-      ephemeral: true,
-    });
-
-    return;
+  if (!id) {
+    return null;
   }
 
-  const panel =
-    await getDb()
-      .collection(
-        'applicationpanels',
-      )
-      .findOne({
-        _id: oid,
-        guildId:
-          interaction.guild.id,
-      });
+  return col(
+    'applicationpanels',
+  ).findOne({
+    _id: id,
+  });
+}
 
-  if (!panel) {
-    await interaction.reply({
-      content:
-        '❌ This application panel no longer exists.',
-      ephemeral: true,
-    });
-
-    return;
-  }
-
-  const choices =
-    getApplicationChoices(
-      panel,
-    );
-
-  const selected =
-    interaction.values[0];
-
-  const choice =
-    findChoice(
-      choices,
-      selected,
-    );
-
-  if (!choice) {
-    await interaction.reply({
-      content:
-        '❌ That application type could not be found.',
-      ephemeral: true,
-    });
-
-    return;
-  }
-
-  const questions =
-    Array.isArray(
-      choice.questions,
-    )
-      ? choice.questions
-          .map((question) =>
-            String(
-              question || '',
-            ).trim(),
-          )
-          .filter(Boolean)
-          .slice(0, 15)
+function getPanelOption(
+  panel,
+  optionKey,
+) {
+  const options =
+    Array.isArray(panel?.options)
+      ? panel.options
       : [];
 
+  return options.find(
+    (option) =>
+      String(option.key) ===
+      String(optionKey),
+  );
+}
+
+/* =========================================================
+   APPLICATION DRAFT / MULTI-PAGE MODAL
+   ========================================================= */
+
+async function createApplicationDraft(
+  interaction,
+  panel,
+  option,
+) {
+  const result =
+    await col(
+      'applicationdrafts',
+    ).insertOne({
+      guildId:
+        interaction.guildId,
+
+      panelId:
+        panel._id,
+
+      optionKey:
+        String(option.key),
+
+      applicantId:
+        interaction.user.id,
+
+      applicantTag:
+        interaction.user.tag ||
+        interaction.user.username,
+
+      answers: [],
+
+      createdAt:
+        new Date(),
+
+      updatedAt:
+        new Date(),
+    });
+
+  return result.insertedId;
+}
+
+async function showApplicationPage(
+  interaction,
+  draft,
+  panel,
+  option,
+  page,
+) {
+  const questions =
+    Array.isArray(option.questions)
+      ? option.questions
+      : [];
+
+  if (!questions.length) {
+    throw new Error(
+      'This application has no questions configured.',
+    );
+  }
+
+  const pages =
+    Math.ceil(
+      questions.length /
+      QUESTIONS_PER_PAGE,
+    );
+
   if (
-    questions.length === 0
+    page < 0 ||
+    page >= pages
   ) {
-    await interaction.reply({
-      content:
-        '❌ This application has no questions configured.',
-      ephemeral: true,
-    });
-
-    return;
+    throw new Error(
+      'Invalid application page.',
+    );
   }
 
-  const now =
-    new Date();
+  const start =
+    page *
+    QUESTIONS_PER_PAGE;
 
-  const draftResult =
-    await getDb()
-      .collection(
-        'applicationdrafts',
+  const pageQuestions =
+    questions.slice(
+      start,
+      start +
+        QUESTIONS_PER_PAGE,
+    );
+
+  const modal =
+    new ModalBuilder()
+      .setCustomId(
+        `lcso:applicationform:${draft._id}:${page}`,
       )
-      .insertOne({
-        guildId:
-          interaction.guild.id,
+      .setTitle(
+        applicationModalTitle(
+          panel,
+          page,
+          pages,
+        ),
+      );
 
-        panelId:
-          panel._id,
+  pageQuestions.forEach(
+    (questionData, localIndex) => {
+      const absoluteIndex =
+        start +
+        localIndex;
 
-        typeKey:
-          selected,
+      const question =
+        getQuestionText(
+          questionData,
+          absoluteIndex,
+        );
 
-        typeLabel:
-          choice.label ||
-          selected,
+      const input =
+        new TextInputBuilder()
+          .setCustomId(
+            `q_${absoluteIndex}`,
+          )
 
-        applicantId:
-          interaction.user.id,
+          /*
+           * DO NOT put the entire
+           * question in the label.
+           * Discord crops long labels
+           * especially badly on mobile.
+           */
+          .setLabel(
+            `Question ${absoluteIndex + 1}`,
+          )
 
-        applicantTag:
-          interaction.user.tag,
+          .setPlaceholder(
+            questionPlaceholder(
+              question,
+            ),
+          )
+          .setStyle(
+            TextInputStyle.Paragraph,
+          )
+          .setRequired(true)
+          .setMaxLength(1500);
 
-        questions,
+      const oldAnswer =
+        Array.isArray(
+          draft.answers,
+        )
+          ? draft.answers.find(
+              (answer) =>
+                Number(
+                  answer.index,
+                ) ===
+                absoluteIndex,
+            )
+          : null;
 
-        answerMap: {},
-
-        createdAt:
-          now,
-
-        updatedAt:
-          now,
-
-        expiresAt:
-          new Date(
-            now.getTime() +
-              60 * 60 * 1000,
+      if (
+        oldAnswer?.answer
+      ) {
+        input.setValue(
+          String(
+            oldAnswer.answer,
+          ).slice(
+            0,
+            1500,
           ),
-      });
+        );
+      }
 
-  const draft =
-    await getDb()
-      .collection(
-        'applicationdrafts',
-      )
-      .findOne({
-        _id:
-          draftResult.insertedId,
-      });
-
-  if (!draft) {
-    await interaction.reply({
-      content:
-        '❌ Could not create the application.',
-      ephemeral: true,
-    });
-
-    return;
-  }
+      modal.addComponents(
+        new ActionRowBuilder()
+          .addComponents(input),
+      );
+    },
+  );
 
   await interaction.showModal(
-    buildApplicationModal(
-      draft,
-      0,
-    ),
+    modal,
+  );
+}
+
+async function beginApplication(
+  interaction,
+) {
+  const panelId =
+    interaction.customId.split(
+      ':',
+    )[2];
+
+  const optionKey =
+    interaction.values?.[0];
+
+  const panel =
+    await getApplicationPanel(
+      panelId,
+    );
+
+  if (
+    !panel ||
+    panel.active === false
+  ) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
+      content:
+        '❌ This application panel is no longer available.',
+    });
+  }
+
+  const option =
+    getPanelOption(
+      panel,
+      optionKey,
+    );
+
+  if (!option) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
+      content:
+        '❌ That application option could not be found.',
+    });
+  }
+
+  const existing =
+    await col(
+      'applications',
+    ).findOne({
+      guildId:
+        interaction.guildId,
+
+      panelId:
+        panel._id,
+
+      applicantId:
+        interaction.user.id,
+
+      status: 'Pending',
+    });
+
+  if (existing) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
+      content:
+        '❌ You already have a pending application.',
+    });
+  }
+
+  await col(
+    'applicationdrafts',
+  ).deleteMany({
+    guildId:
+      interaction.guildId,
+
+    panelId:
+      panel._id,
+
+    applicantId:
+      interaction.user.id,
+  });
+
+  const draftId =
+    await createApplicationDraft(
+      interaction,
+      panel,
+      option,
+    );
+
+  const draft =
+    await col(
+      'applicationdrafts',
+    ).findOne({
+      _id:
+        draftId,
+    });
+
+  await showApplicationPage(
+    interaction,
+    draft,
+    panel,
+    option,
+    0,
   );
 }
 
@@ -491,54 +483,345 @@ async function continueApplication(
     );
 
   const draftId =
-    parts[2];
+    objectId(
+      parts[2],
+    );
 
   const page =
-    Number(parts[3]);
-
-  const oid =
-    objectId(draftId);
+    Number(
+      parts[3],
+    );
 
   if (
-    !oid ||
+    !draftId ||
     !Number.isInteger(page)
   ) {
-    await interaction.reply({
-      content:
-        '❌ Application session is invalid.',
-      ephemeral: true,
-    });
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
 
-    return;
+      content:
+        '❌ Invalid application session.',
+    });
   }
 
   const draft =
-    await getDb()
-      .collection(
-        'applicationdrafts',
-      )
-      .findOne({
-        _id: oid,
-        applicantId:
-          interaction.user.id,
-      });
+    await col(
+      'applicationdrafts',
+    ).findOne({
+      _id:
+        draftId,
 
-  if (!draft) {
-    await interaction.reply({
-      content:
-        '❌ This application session has expired.',
-      ephemeral: true,
+      applicantId:
+        interaction.user.id,
     });
 
-    return;
+  if (!draft) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
+      content:
+        '❌ This application session has expired.',
+    });
   }
 
-  await interaction.showModal(
-    buildApplicationModal(
-      draft,
-      page,
-    ),
+  const panel =
+    await col(
+      'applicationpanels',
+    ).findOne({
+      _id:
+        draft.panelId,
+    });
+
+  if (!panel) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
+      content:
+        '❌ Application panel could not be found.',
+    });
+  }
+
+  const option =
+    getPanelOption(
+      panel,
+      draft.optionKey,
+    );
+
+  if (!option) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
+      content:
+        '❌ Application type could not be found.',
+    });
+  }
+
+  await showApplicationPage(
+    interaction,
+    draft,
+    panel,
+    option,
+    page,
   );
+}
+
+function buildReviewEmbed(
+  interaction,
+  panel,
+  option,
+  answers,
+) {
+  const embed =
+    new EmbedBuilder()
+      .setColor(0xc8a34d)
+      .setTitle(
+        '📋 Liberty County Sheriff’s Office | Application',
+      )
+      .setDescription(
+        [
+          `**Applicant:** <@${interaction.user.id}>`,
+          `**Application:** ${truncate(
+            option.label ||
+            panel.title ||
+            'LCSO Application',
+            200,
+          )}`,
+          '',
+          '**Application Answers**',
+        ].join('\n'),
+      )
+      .setFooter({
+        text:
+          'Liberty County Sheriff’s Office • Springfield Roleplay',
+      })
+      .setTimestamp();
+
+  for (
+    const answer of
+    answers
+  ) {
+    embed.addFields({
+      name:
+        `${Number(answer.index) + 1}. ${truncate(
+          answer.question,
+          240,
+        )}`,
+
+      value:
+        truncate(
+          answer.answer,
+          1000,
+        ),
+
+      inline:
+        false,
+    });
+  }
+
+  const icon =
+    interaction.guild.iconURL({
+      size: 256,
+    });
+
+  if (icon) {
+    embed.setThumbnail(
+      icon,
+    );
+  }
+
+  return embed;
+}
+
+async function finishApplication(
+  interaction,
+  draft,
+  panel,
+  option,
+  answers,
+) {
+  const now =
+    new Date();
+
+  /*
+   * Save FIRST.
+   *
+   * The Accept/Deny buttons receive
+   * the exact MongoDB _id from this
+   * insert. This prevents the old
+   * "Application could not be found"
+   * problem.
+   */
+  const insert =
+    await col(
+      'applications',
+    ).insertOne({
+      guildId:
+        interaction.guildId,
+
+      panelId:
+        panel._id,
+
+      applicantId:
+        interaction.user.id,
+
+      applicantTag:
+        interaction.user.tag ||
+        interaction.user.username,
+
+      typeKey:
+        String(
+          option.key,
+        ),
+
+      typeLabel:
+        option.label ||
+        panel.title ||
+        'LCSO Application',
+
+      answers,
+
+      status:
+        'Pending',
+
+      reviewReason:
+        null,
+
+      reviewedBy:
+        null,
+
+      reviewedAt:
+        null,
+
+      reviewChannelId:
+        panel.reviewChannelId ||
+        null,
+
+      reviewMessageId:
+        null,
+
+      createdAt:
+        now,
+
+      updatedAt:
+        now,
+    });
+
+  const applicationId =
+    String(
+      insert.insertedId,
+    );
+
+  const reviewChannelId =
+    panel.reviewChannelId ||
+    panel.channelId;
+
+  const reviewChannel =
+    interaction.guild.channels.cache.get(
+      reviewChannelId,
+    ) ||
+    await interaction.guild.channels
+      .fetch(
+        reviewChannelId,
+      )
+      .catch(
+        () => null,
+      );
+
+  if (
+    !reviewChannel ||
+    !reviewChannel.isTextBased()
+  ) {
+    await col(
+      'applications',
+    ).deleteOne({
+      _id:
+        insert.insertedId,
+    });
+
+    throw new Error(
+      'The application review channel could not be found.',
+    );
+  }
+
+  const reviewEmbed =
+    buildReviewEmbed(
+      interaction,
+      panel,
+      option,
+      answers,
+    );
+
+  const buttons =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `lcso:appreview:${applicationId}:accept`,
+          )
+          .setLabel(
+            'Accept',
+          )
+          .setStyle(
+            ButtonStyle.Success,
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `lcso:appreview:${applicationId}:deny`,
+          )
+          .setLabel(
+            'Deny',
+          )
+          .setStyle(
+            ButtonStyle.Danger,
+          ),
+      );
+
+  const message =
+    await reviewChannel.send({
+      embeds: [
+        reviewEmbed,
+      ],
+
+      components: [
+        buttons,
+      ],
+    });
+
+  await col(
+    'applications',
+  ).updateOne(
+    {
+      _id:
+        insert.insertedId,
+    },
+
+    {
+      $set: {
+        reviewChannelId:
+          reviewChannel.id,
+
+        reviewMessageId:
+          message.id,
+
+        updatedAt:
+          new Date(),
+      },
+    },
+  );
+
+  await col(
+    'applicationdrafts',
+  ).deleteOne({
+    _id:
+      draft._id,
+  });
+
+  return applicationId;
 }
 
 async function submitApplicationPage(
@@ -550,414 +833,241 @@ async function submitApplicationPage(
     );
 
   const draftId =
-    parts[2];
-
-  const page =
-    Number(parts[3]);
-
-  const oid =
-    objectId(draftId);
-
-  if (
-    !oid ||
-    !Number.isInteger(page)
-  ) {
-    await interaction.reply({
-      content:
-        '❌ Application session is invalid.',
-      ephemeral: true,
-    });
-
-    return;
-  }
-
-  const drafts =
-    getDb().collection(
-      'applicationdrafts',
+    objectId(
+      parts[2],
     );
 
+  const page =
+    Number(
+      parts[3],
+    );
+
+  if (
+    !draftId ||
+    !Number.isInteger(page)
+  ) {
+    throw new Error(
+      'Invalid application session.',
+    );
+  }
+
   const draft =
-    await drafts.findOne({
-      _id: oid,
+    await col(
+      'applicationdrafts',
+    ).findOne({
+      _id:
+        draftId,
+
       applicantId:
         interaction.user.id,
     });
 
   if (!draft) {
-    await interaction.reply({
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
       content:
         '❌ This application session has expired.',
-      ephemeral: true,
+    });
+  }
+
+  const panel =
+    await col(
+      'applicationpanels',
+    ).findOne({
+      _id:
+        draft.panelId,
     });
 
-    return;
+  if (!panel) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
+      content:
+        '❌ Application panel could not be found.',
+    });
+  }
+
+  const option =
+    getPanelOption(
+      panel,
+      draft.optionKey,
+    );
+
+  if (!option) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
+      content:
+        '❌ Application type could not be found.',
+    });
   }
 
   const questions =
     Array.isArray(
-      draft.questions,
+      option.questions,
     )
-      ? draft.questions
+      ? option.questions
       : [];
 
-  const answerMap = {
-    ...(draft.answerMap ||
-      {}),
-  };
-
   const start =
-    page * 5;
+    page *
+    QUESTIONS_PER_PAGE;
 
-  const currentQuestions =
-    questions.slice(
-      start,
-      start + 5,
+  const end =
+    Math.min(
+      start +
+        QUESTIONS_PER_PAGE,
+      questions.length,
     );
 
-  for (
-    let localIndex = 0;
-    localIndex <
-    currentQuestions.length;
-    localIndex += 1
-  ) {
-    const absoluteIndex =
-      start +
-      localIndex;
+  const answerMap =
+    new Map();
 
-    answerMap[
-      String(absoluteIndex)
-    ] =
-      interaction.fields.getTextInputValue(
-        `q${absoluteIndex}`,
-      );
+  for (
+    const oldAnswer of
+    Array.isArray(
+      draft.answers,
+    )
+      ? draft.answers
+      : []
+  ) {
+    answerMap.set(
+      Number(
+        oldAnswer.index,
+      ),
+      oldAnswer,
+    );
   }
 
-  await drafts.updateOne(
+  for (
+    let index = start;
+    index < end;
+    index += 1
+  ) {
+    const answer =
+      interaction.fields.getTextInputValue(
+        `q_${index}`,
+      );
+
+    answerMap.set(
+      index,
+      {
+        index,
+
+        question:
+          getQuestionText(
+            questions[index],
+            index,
+          ),
+
+        answer:
+          String(answer).trim(),
+      },
+    );
+  }
+
+  const answers =
+    [
+      ...answerMap.values(),
+    ].sort(
+      (a, b) =>
+        Number(a.index) -
+        Number(b.index),
+    );
+
+  await col(
+    'applicationdrafts',
+  ).updateOne(
     {
-      _id: draft._id,
+      _id:
+        draft._id,
     },
+
     {
       $set: {
-        answerMap,
+        answers,
+
         updatedAt:
           new Date(),
       },
     },
   );
 
-  const nextStart =
-    start + 5;
+  const pages =
+    Math.ceil(
+      questions.length /
+      QUESTIONS_PER_PAGE,
+    );
 
   if (
-    nextStart <
-    questions.length
+    page + 1 <
+    pages
   ) {
-    const nextPage =
-      page + 1;
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
 
-    const button =
-      new ButtonBuilder()
-        .setCustomId(
-          `lcso:application-next:${draft._id}:${nextPage}`,
-        )
-        .setLabel(
-          `Continue to Part ${nextPage + 1}`,
-        )
-        .setStyle(
-          ButtonStyle.Primary,
-        );
-
-    await interaction.reply({
       content:
-        `✅ Part ${page + 1} completed. Continue to the next part of the application.`,
-      components: [
-        new ActionRowBuilder().addComponents(
-          button,
-        ),
-      ],
-      ephemeral: true,
-    });
+        `✅ Part ${page + 1} of ${pages} saved. Continue to the next section.`,
 
-    return;
+      components: [
+        new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId(
+                `lcso:applicationcontinue:${draft._id}:${page + 1}`,
+              )
+              .setLabel(
+                `Continue to Part ${page + 2}`,
+              )
+              .setStyle(
+                ButtonStyle.Primary,
+              ),
+          ),
+      ],
+    });
   }
 
   await finishApplication(
     interaction,
-    {
-      ...draft,
-      answerMap,
-    },
+    draft,
+    panel,
+    option,
+    answers,
   );
-}
 
-async function finishApplication(
-  interaction,
-  draft,
-) {
-  const panel =
-    await getDb()
-      .collection(
-        'applicationpanels',
-      )
-      .findOne({
-        _id:
-          draft.panelId,
-        guildId:
-          interaction.guild.id,
-      });
+  return interaction.reply({
+    flags:
+      MessageFlags.Ephemeral,
 
-  if (!panel) {
-    await interaction.reply({
-      content:
-        '❌ Application panel no longer exists.',
-      ephemeral: true,
-    });
-
-    return;
-  }
-
-  const choices =
-    getApplicationChoices(
-      panel,
-    );
-
-  const choice =
-    findChoice(
-      choices,
-      draft.typeKey,
-    );
-
-  const reviewChannelId =
-    panel.reviewChannelId ||
-    panel.applicationReviewChannelId;
-
-  if (!reviewChannelId) {
-    await interaction.reply({
-      content:
-        '❌ Application review channel has not been configured.',
-      ephemeral: true,
-    });
-
-    return;
-  }
-
-  const reviewChannel =
-    interaction.guild.channels.cache.get(
-      reviewChannelId,
-    ) ||
-    (await interaction.guild.channels
-      .fetch(
-        reviewChannelId,
-      )
-      .catch(() => null));
-
-  if (
-    !reviewChannel ||
-    !reviewChannel.isTextBased() ||
-    typeof reviewChannel.send !==
-      'function'
-  ) {
-    await interaction.reply({
-      content:
-        '❌ The configured application review channel is invalid.',
-      ephemeral: true,
-    });
-
-    return;
-  }
-
-  const questions =
-    Array.isArray(
-      draft.questions,
-    )
-      ? draft.questions
-      : [];
-
-  const answers =
-    questions.map(
-      (
-        question,
-        index,
-      ) => ({
-        question,
-        answer:
-          String(
-            draft.answerMap?.[
-              String(index)
-            ] || '',
-          ).trim(),
-      }),
-    );
-
-  const now =
-    new Date();
-
-  const result =
-    await getDb()
-      .collection(
-        'applications',
-      )
-      .insertOne({
-        guildId:
-          interaction.guild.id,
-
-        panelId:
-          panel._id,
-
-        typeKey:
-          draft.typeKey,
-
-        typeLabel:
-          draft.typeLabel,
-
-        applicantId:
-          interaction.user.id,
-
-        applicantTag:
-          interaction.user.tag,
-
-        questions,
-
-        answers,
-
-        status:
-          'Pending',
-
-        reviewChannelId,
-
-        createdAt:
-          now,
-
-        updatedAt:
-          now,
-      });
-
-  const embed =
-    new EmbedBuilder()
-      .setColor(0xc9a15b)
-      .setTitle(
-        `📋 New Application — ${draft.typeLabel}`,
-      )
-      .setDescription(
-        `**Applicant:** <@${interaction.user.id}>\n**Application:** ${draft.typeLabel}`,
-      )
-      .setFooter({
-        text:
-          'Liberty County Sheriff’s Office • Springfield Roleplay',
-      })
-      .setTimestamp(now);
-
-  for (
-    let index = 0;
-    index <
-    answers.length;
-    index += 1
-  ) {
-    const item =
-      answers[index];
-
-    embed.addFields({
-      name:
-        `${index + 1}. ${truncate(
-          item.question,
-          240,
-        )}`,
-
-      value:
-        truncate(
-          item.answer ||
-            'No response',
-          1000,
-        ),
-
-      inline: false,
-    });
-  }
-
-  const accept =
-    new ButtonBuilder()
-      .setCustomId(
-        `lcso:application-review:${result.insertedId}:accept`,
-      )
-      .setLabel('Accept')
-      .setStyle(
-        ButtonStyle.Success,
-      );
-
-  const deny =
-    new ButtonBuilder()
-      .setCustomId(
-        `lcso:application-review:${result.insertedId}:deny`,
-      )
-      .setLabel('Deny')
-      .setStyle(
-        ButtonStyle.Danger,
-      );
-
-  const reviewMessage =
-    await reviewChannel.send({
-      embeds: [embed],
-      components: [
-        new ActionRowBuilder().addComponents(
-          accept,
-          deny,
-        ),
-      ],
-      allowedMentions: {
-        users: [
-          interaction.user.id,
-        ],
-      },
-    });
-
-  await getDb()
-    .collection(
-      'applications',
-    )
-    .updateOne(
-      {
-        _id:
-          result.insertedId,
-      },
-      {
-        $set: {
-          reviewMessageId:
-            reviewMessage.id,
-        },
-      },
-    );
-
-  await getDb()
-    .collection(
-      'applicationdrafts',
-    )
-    .deleteOne({
-      _id:
-        draft._id,
-    });
-
-  await interaction.reply({
     content:
-      `✅ Your **${draft.typeLabel}** application has been submitted successfully.`,
-    ephemeral: true,
+      '✅ Your application has been submitted to LCSO Command Staff.',
   });
 }
 
-async function openApplicationReview(
+/* =========================================================
+   ACCEPT / DENY
+   ========================================================= */
+
+async function reviewApplication(
   interaction,
 ) {
   if (
-    !(await isStaff(
+    !await canReview(
       interaction,
-    ))
+    )
   ) {
-    await interaction.reply({
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
       content:
         '❌ You do not have permission to review applications.',
-      ephemeral: true,
     });
-
-    return;
   }
 
   const parts =
@@ -966,250 +1076,165 @@ async function openApplicationReview(
     );
 
   const applicationId =
-    parts[2];
-
-  const decision =
-    parts[3];
-
-  const oid =
     objectId(
-      applicationId,
+      parts[2],
     );
 
-  if (!oid) {
-    await interaction.reply({
-      content:
-        '❌ Application could not be found.',
-      ephemeral: true,
-    });
-
-    return;
-  }
-
-  const application =
-    await getDb()
-      .collection(
-        'applications',
-      )
-      .findOne({
-        _id: oid,
-        guildId:
-          interaction.guild.id,
-      });
-
-  if (!application) {
-    await interaction.reply({
-      content:
-        '❌ Application could not be found.',
-      ephemeral: true,
-    });
-
-    return;
-  }
-
-  if (
+  const decision =
     String(
-      application.status,
-    ).toLowerCase() !==
-    'pending'
-  ) {
-    await interaction.reply({
-      content:
-        '❌ This application has already been reviewed.',
-      ephemeral: true,
-    });
+      parts[3] ||
+      '',
+    ).toLowerCase();
 
-    return;
-  }
-
-  const modal =
-    new ModalBuilder()
-      .setCustomId(
-        `lcso:application-review-modal:${applicationId}:${decision}`,
-      )
-      .setTitle(
-        decision === 'accept'
-          ? 'Accept Application'
-          : 'Deny Application',
-      );
-
-  const reason =
-    new TextInputBuilder()
-      .setCustomId('reason')
-      .setLabel(
-        'Reason / Notes',
-      )
-      .setStyle(
-        TextInputStyle.Paragraph,
-      )
-      .setRequired(false)
-      .setMaxLength(1000);
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(
-      reason,
-    ),
-  );
-
-  await interaction.showModal(
-    modal,
-  );
-}
-
-async function submitApplicationReview(
-  interaction,
-) {
   if (
-    !(await isStaff(
-      interaction,
-    ))
+    ![
+      'accept',
+      'deny',
+    ].includes(
+      decision,
+    )
   ) {
-    await interaction.reply({
-      content:
-        '❌ You do not have permission to review applications.',
-      ephemeral: true,
-    });
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
 
-    return;
+      content:
+        '❌ Invalid application decision.',
+    });
   }
 
-  const parts =
-    interaction.customId.split(
-      ':',
-    );
+  /*
+   * Primary lookup:
+   * exact MongoDB ID stored in button.
+   */
+  let application =
+    applicationId
+      ? await col(
+          'applications',
+        ).findOne({
+          _id:
+            applicationId,
 
-  const applicationId =
-    parts[3];
+          guildId:
+            interaction.guildId,
+        })
+      : null;
 
-  const decision =
-    parts[4];
+  /*
+   * Safety fallback:
+   * if an older message has a broken
+   * button ID, locate the application
+   * using the Discord review message.
+   */
+  if (!application) {
+    application =
+      await col(
+        'applications',
+      ).findOne({
+        guildId:
+          interaction.guildId,
 
-  const oid =
-    objectId(
-      applicationId,
-    );
-
-  if (!oid) {
-    await interaction.reply({
-      content:
-        '❌ Application could not be found.',
-      ephemeral: true,
-    });
-
-    return;
+        reviewMessageId:
+          interaction.message.id,
+      });
   }
-
-  const applications =
-    getDb().collection(
-      'applications',
-    );
-
-  const application =
-    await applications.findOne({
-      _id: oid,
-      guildId:
-        interaction.guild.id,
-    });
 
   if (!application) {
-    await interaction.reply({
-      content:
-        '❌ Application could not be found.',
-      ephemeral: true,
-    });
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
 
-    return;
+      content:
+        '❌ Application could not be found in the database.',
+    });
   }
 
-  const reason =
-    interaction.fields
-      .getTextInputValue(
-        'reason',
-      )
-      .trim();
+  if (
+    application.status !==
+    'Pending'
+  ) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
+      content:
+        `ℹ️ This application has already been **${application.status}**.`,
+    });
+  }
+
+  await interaction.deferReply({
+    flags:
+      MessageFlags.Ephemeral,
+  });
 
   const accepted =
-    decision === 'accept';
+    decision ===
+    'accept';
 
   const status =
     accepted
       ? 'Accepted'
       : 'Denied';
 
-  const now =
-    new Date();
-
-  await applications.updateOne(
+  await col(
+    'applications',
+  ).updateOne(
     {
-      _id: application._id,
+      _id:
+        application._id,
     },
+
     {
       $set: {
         status,
+
         reviewedBy:
           interaction.user.id,
-        reviewedByTag:
-          interaction.user.tag,
-        reviewReason:
-          reason || null,
-        reviewedAt: now,
-        updatedAt: now,
+
+        reviewedAt:
+          new Date(),
+
+        updatedAt:
+          new Date(),
       },
     },
   );
 
-  /*
-   * Optional accepted role support.
-   * If an application type later has
-   * acceptedRoleId configured, it will
-   * automatically be assigned.
-   */
-  if (accepted) {
-    const panel =
-      await getDb()
-        .collection(
-          'applicationpanels',
+  const oldEmbed =
+    interaction.message.embeds?.[0];
+
+  if (oldEmbed) {
+    const updated =
+      EmbedBuilder.from(
+        oldEmbed,
+      )
+        .setColor(
+          accepted
+            ? 0x57f287
+            : 0xed4245,
         )
-        .findOne({
-          _id:
-            application.panelId,
+        .addFields({
+          name:
+            'Application Status',
+
+          value:
+            `${accepted ? '✅' : '❌'} **${status}** by <@${interaction.user.id}>`,
+
+          inline:
+            false,
         });
 
-    const choice =
-      findChoice(
-        getApplicationChoices(
-          panel,
-        ),
-        application.typeKey,
-      );
+    await interaction.message.edit({
+      embeds: [
+        updated,
+      ],
 
-    const acceptedRoleId =
-      choice?.acceptedRoleId ||
-      panel?.acceptedRoleId;
-
-    if (acceptedRoleId) {
-      const member =
-        await interaction.guild.members
-          .fetch(
-            application.applicantId,
-          )
-          .catch(() => null);
-
-      const role =
-        interaction.guild.roles.cache.get(
-          acceptedRoleId,
-        );
-
-      if (
-        member &&
-        role &&
-        role.editable
-      ) {
-        await member.roles
-          .add(role)
-          .catch(() => {});
-      }
-    }
+      components: [],
+    });
+  } else {
+    await interaction.message.edit({
+      components: [],
+    });
   }
 
   const applicant =
@@ -1217,208 +1242,133 @@ async function submitApplicationReview(
       .fetch(
         application.applicantId,
       )
-      .catch(() => null);
+      .catch(
+        () => null,
+      );
 
   if (applicant) {
-    const resultEmbed =
-      new EmbedBuilder()
-        .setColor(
-          accepted
-            ? 0x57f287
-            : 0xed4245,
-        )
-        .setTitle(
-          accepted
-            ? '✅ Application Accepted'
-            : '❌ Application Denied',
-        )
-        .setDescription(
-          [
-            `Your **${application.typeLabel || 'LCSO'}** application has been **${status.toLowerCase()}**.`,
-            '',
-            `**Reviewed by:** ${interaction.user.tag}`,
-            `**Reason:** ${reason || 'No reason provided.'}`,
-          ].join('\n'),
-        )
-        .setFooter({
-          text:
-            'Liberty County Sheriff’s Office • Springfield Roleplay',
-        })
-        .setTimestamp();
-
-    await applicant
-      .send({
-        embeds: [
-          resultEmbed,
-        ],
-      })
-      .catch(() => {});
-  }
-
-  if (
-    application.reviewChannelId &&
-    application.reviewMessageId
-  ) {
-    const reviewChannel =
-      interaction.guild.channels.cache.get(
-        application.reviewChannelId,
-      ) ||
-      (await interaction.guild.channels
-        .fetch(
-          application.reviewChannelId,
-        )
-        .catch(() => null));
-
-    if (
-      reviewChannel &&
-      reviewChannel.isTextBased() &&
-      reviewChannel.messages
-    ) {
-      const reviewMessage =
-        await reviewChannel.messages
-          .fetch(
-            application.reviewMessageId,
-          )
-          .catch(() => null);
-
-      if (reviewMessage) {
-        const oldEmbed =
-          reviewMessage.embeds[0];
-
-        const updatedEmbed =
-          oldEmbed
-            ? EmbedBuilder.from(
-                oldEmbed,
-              )
-            : new EmbedBuilder()
-                .setTitle(
-                  application.typeLabel ||
-                    'Application',
-                );
-
-        updatedEmbed
+    await applicant.send({
+      embeds: [
+        new EmbedBuilder()
           .setColor(
             accepted
               ? 0x57f287
               : 0xed4245,
           )
-          .addFields({
-            name: 'Decision',
-            value: [
-              `**Status:** ${status}`,
-              `**Reviewed By:** <@${interaction.user.id}>`,
-              `**Reason:** ${reason || 'No reason provided.'}`,
-            ].join('\n'),
-          });
-
-        await reviewMessage
-          .edit({
-            embeds: [
-              updatedEmbed,
-            ],
-            components: [],
+          .setTitle(
+            accepted
+              ? '✅ LCSO Application Accepted'
+              : '❌ LCSO Application Denied',
+          )
+          .setDescription(
+            accepted
+              ? 'Your application to the **Liberty County Sheriff’s Office** has been accepted.'
+              : 'Your application to the **Liberty County Sheriff’s Office** has been denied.',
+          )
+          .setFooter({
+            text:
+              'Liberty County Sheriff’s Office • Springfield Roleplay',
           })
-          .catch(() => {});
-      }
-    }
+          .setTimestamp(),
+      ],
+    }).catch(
+      () => null,
+    );
   }
 
-  await interaction.reply({
+  await interaction.editReply({
     content:
-      `✅ Application ${status.toLowerCase()}.`,
-    ephemeral: true,
+      `✅ Application **${status.toLowerCase()}** successfully.`,
   });
 }
 
 /* =========================================================
-   TICKETS
+   TICKET SUPPORT
    ========================================================= */
 
-async function startTicket(
+async function beginTicket(
   interaction,
 ) {
   const panelId =
-    interaction.customId.slice(
-      'lcso:ticket:'.length,
+    interaction.customId.split(
+      ':',
+    )[2];
+
+  const id =
+    objectId(
+      panelId,
     );
 
-  const oid =
-    objectId(panelId);
+  if (!id) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
 
-  if (!oid) {
-    await interaction.reply({
       content:
-        '❌ Ticket panel could not be found.',
-      ephemeral: true,
+        '❌ Invalid ticket panel.',
     });
-
-    return;
   }
 
   const panel =
-    await getDb()
-      .collection(
-        'ticketpanels',
-      )
-      .findOne({
-        _id: oid,
-        guildId:
-          interaction.guild.id,
-      });
+    await col(
+      'ticketpanels',
+    ).findOne({
+      _id: id,
+    });
 
   if (!panel) {
-    await interaction.reply({
-      content:
-        '❌ This ticket panel no longer exists.',
-      ephemeral: true,
-    });
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
 
-    return;
+      content:
+        '❌ Ticket panel could not be found.',
+    });
   }
 
-  const choices =
-    getTicketChoices(
-      panel,
+  const optionKey =
+    interaction.values?.[0];
+
+  const option =
+    (
+      Array.isArray(
+        panel.options,
+      )
+        ? panel.options
+        : []
+    ).find(
+      (entry) =>
+        String(entry.key) ===
+        String(optionKey),
     );
 
-  const selected =
-    interaction.values[0];
+  if (!option) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
 
-  const choice =
-    findChoice(
-      choices,
-      selected,
-    );
-
-  if (!choice) {
-    await interaction.reply({
       content:
         '❌ Ticket type could not be found.',
-      ephemeral: true,
     });
-
-    return;
   }
 
   const modal =
     new ModalBuilder()
       .setCustomId(
-        `lcso:ticket-modal:${panel._id}:${encodeURIComponent(
-          selected,
-        )}`,
+        `lcso:ticketform:${panel._id}:${option.key}`,
       )
       .setTitle(
-        truncate(
-          choice.label ||
-            'Open Ticket',
-          45,
-        ),
+        'Open LCSO Ticket',
       );
 
   const subject =
     new TextInputBuilder()
-      .setCustomId('subject')
-      .setLabel('Subject')
+      .setCustomId(
+        'subject',
+      )
+      .setLabel(
+        'Subject',
+      )
       .setStyle(
         TextInputStyle.Short,
       )
@@ -1427,23 +1377,31 @@ async function startTicket(
 
   const details =
     new TextInputBuilder()
-      .setCustomId('details')
+      .setCustomId(
+        'details',
+      )
       .setLabel(
-        'Explain what you need help with',
+        'Details',
+      )
+      .setPlaceholder(
+        'Describe what you need assistance with.',
       )
       .setStyle(
         TextInputStyle.Paragraph,
       )
       .setRequired(true)
-      .setMaxLength(2000);
+      .setMaxLength(1500);
 
   modal.addComponents(
-    new ActionRowBuilder().addComponents(
-      subject,
-    ),
-    new ActionRowBuilder().addComponents(
-      details,
-    ),
+    new ActionRowBuilder()
+      .addComponents(
+        subject,
+      ),
+
+    new ActionRowBuilder()
+      .addComponents(
+        details,
+      ),
   );
 
   await interaction.showModal(
@@ -1460,103 +1418,86 @@ async function submitTicket(
     );
 
   const panelId =
-    parts[2];
-
-  const selected =
-    decodeURIComponent(
-      parts.slice(3).join(
-        ':',
-      ),
+    objectId(
+      parts[2],
     );
 
-  const oid =
-    objectId(panelId);
-
-  if (!oid) {
-    await interaction.reply({
-      content:
-        '❌ Ticket panel could not be found.',
-      ephemeral: true,
-    });
-
-    return;
-  }
+  const optionKey =
+    parts[3];
 
   const panel =
-    await getDb()
-      .collection(
-        'ticketpanels',
-      )
-      .findOne({
-        _id: oid,
-        guildId:
-          interaction.guild.id,
-      });
+    panelId
+      ? await col(
+          'ticketpanels',
+        ).findOne({
+          _id:
+            panelId,
+        })
+      : null;
 
   if (!panel) {
-    await interaction.reply({
-      content:
-        '❌ Ticket panel no longer exists.',
-      ephemeral: true,
-    });
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
 
-    return;
+      content:
+        '❌ Ticket panel could not be found.',
+    });
   }
 
-  const choices =
-    getTicketChoices(
-      panel,
+  const option =
+    (
+      Array.isArray(
+        panel.options,
+      )
+        ? panel.options
+        : []
+    ).find(
+      (entry) =>
+        String(entry.key) ===
+        String(optionKey),
     );
 
-  const choice =
-    findChoice(
-      choices,
-      selected,
-    );
+  if (!option) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
 
-  if (!choice) {
-    await interaction.reply({
       content:
         '❌ Ticket type could not be found.',
-      ephemeral: true,
     });
-
-    return;
   }
 
-  const categoryId =
-    choice.categoryId ||
-    panel.categoryId ||
-    panel.ticketCategoryId;
+  await interaction.deferReply({
+    flags:
+      MessageFlags.Ephemeral,
+  });
+
+  const subject =
+    interaction.fields
+      .getTextInputValue(
+        'subject',
+      );
+
+  const details =
+    interaction.fields
+      .getTextInputValue(
+        'details',
+      );
 
   const supportRoleIds =
     Array.isArray(
-      choice.supportRoleIds,
+      panel.supportRoleIds,
     )
-      ? choice.supportRoleIds
-      : Array.isArray(
-          panel.supportRoleIds,
-        )
-        ? panel.supportRoleIds
-        : [];
+      ? panel.supportRoleIds
+      : [];
 
-  const prefix =
-    safeName(
-      choice.prefix ||
-        choice.label ||
-        'ticket',
-    ) || 'ticket';
-
-  const username =
-    safeName(
-      interaction.user.username,
-    ) || 'user';
-
-  const permissions = [
+  const overwrites = [
     {
       id:
-        interaction.guild
-          .roles.everyone.id,
+        interaction.guild.roles
+          .everyone.id,
+
       deny: [
         PermissionFlagsBits.ViewChannel,
       ],
@@ -1565,247 +1506,232 @@ async function submitTicket(
     {
       id:
         interaction.user.id,
+
       allow: [
         PermissionFlagsBits.ViewChannel,
         PermissionFlagsBits.SendMessages,
         PermissionFlagsBits.ReadMessageHistory,
-        PermissionFlagsBits.AttachFiles,
-        PermissionFlagsBits.EmbedLinks,
+      ],
+    },
+
+    {
+      id:
+        interaction.client.user.id,
+
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ManageChannels,
+        PermissionFlagsBits.ReadMessageHistory,
       ],
     },
   ];
 
   for (
-    const roleId of supportRoleIds
+    const roleId of
+    supportRoleIds
   ) {
-    if (
-      interaction.guild.roles.cache.has(
+    overwrites.push({
+      id:
         roleId,
-      )
-    ) {
-      permissions.push({
-        id: roleId,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
-        ],
-      });
-    }
+
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
+    });
   }
+
+  const prefix =
+    cleanName(
+      option.prefix ||
+      option.key ||
+      'ticket',
+    );
 
   const channel =
     await interaction.guild.channels.create({
       name:
-        `${prefix}-${username}`.slice(
+        `${prefix}-${cleanName(
+          interaction.user.username,
+        )}`.slice(
           0,
-          90,
+          95,
         ),
 
       type:
         ChannelType.GuildText,
 
       parent:
-        categoryId ||
-        undefined,
+        panel.categoryId ||
+        null,
 
       permissionOverwrites:
-        permissions,
-
-      reason:
-        `LCSO ticket opened by ${interaction.user.tag}`,
+        overwrites,
     });
 
-  const subject =
-    interaction.fields
-      .getTextInputValue(
-        'subject',
-      )
-      .trim();
-
-  const details =
-    interaction.fields
-      .getTextInputValue(
-        'details',
-      )
-      .trim();
-
-  const now =
-    new Date();
-
   const result =
-    await getDb()
-      .collection('tickets')
-      .insertOne({
-        guildId:
-          interaction.guild.id,
+    await col(
+      'tickets',
+    ).insertOne({
+      guildId:
+        interaction.guildId,
 
-        ownerId:
-          interaction.user.id,
+      panelId:
+        panel._id,
 
-        ownerTag:
-          interaction.user.tag,
+      ownerId:
+        interaction.user.id,
 
-        panelId:
-          panel._id,
+      type:
+        option.key,
 
-        typeKey:
-          selected,
+      typeLabel:
+        option.label ||
+        option.key,
 
-        type:
-          choice.label ||
-          selected,
+      subject,
 
-        subject,
-        details,
+      details,
 
-        channelId:
-          channel.id,
+      channelId:
+        channel.id,
 
-        status:
-          'Open',
+      status:
+        'Open',
 
-        supportRoleIds,
+      createdAt:
+        new Date(),
 
-        createdAt:
-          now,
-
-        updatedAt:
-          now,
-      });
-
-  const welcome =
-    new EmbedBuilder()
-      .setColor(0xc9a15b)
-      .setTitle(
-        `📩 ${choice.label || 'LCSO Support'}`,
-      )
-      .setDescription(
-        [
-          `Welcome <@${interaction.user.id}>.`,
-          '',
-          'A member of the Liberty County Sheriff’s Office will assist you as soon as possible.',
-          '',
-          `**Subject:** ${subject}`,
-          `**Details:** ${details}`,
-        ].join('\n'),
-      )
-      .setFooter({
-        text:
-          'Liberty County Sheriff’s Office • Springfield Roleplay',
-      })
-      .setTimestamp(now);
-
-  const close =
-    new ButtonBuilder()
-      .setCustomId(
-        `lcso:ticket-close:${result.insertedId}`,
-      )
-      .setLabel(
-        'Close Ticket',
-      )
-      .setStyle(
-        ButtonStyle.Danger,
-      );
+      updatedAt:
+        new Date(),
+    });
 
   await channel.send({
-    content: `<@${interaction.user.id}>`,
-    embeds: [welcome],
-    components: [
-      new ActionRowBuilder().addComponents(
-        close,
-      ),
+    content:
+      `<@${interaction.user.id}>`,
+
+    embeds: [
+      new EmbedBuilder()
+        .setColor(
+          0xc8a34d,
+        )
+        .setTitle(
+          `🎫 ${option.label || 'LCSO Ticket'}`,
+        )
+        .setDescription(
+          [
+            `**Opened By:** <@${interaction.user.id}>`,
+            `**Subject:** ${truncate(
+              subject,
+              200,
+            )}`,
+            '',
+            truncate(
+              details,
+              3500,
+            ),
+          ].join('\n'),
+        )
+        .setFooter({
+          text:
+            'Liberty County Sheriff’s Office • Springfield Roleplay',
+        })
+        .setTimestamp(),
     ],
-    allowedMentions: {
-      users: [
-        interaction.user.id,
-      ],
-      roles:
-        supportRoleIds,
-    },
+
+    components: [
+      new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(
+              `lcso:ticketclose:${result.insertedId}`,
+            )
+            .setLabel(
+              'Close Ticket',
+            )
+            .setStyle(
+              ButtonStyle.Danger,
+            ),
+        ),
+    ],
   });
 
-  await interaction.reply({
+  await interaction.editReply({
     content:
-      `✅ Your ticket has been created: ${channel}`,
-    ephemeral: true,
+      `✅ Ticket created: <#${channel.id}>`,
   });
 }
 
 async function closeTicket(
   interaction,
 ) {
-  let ticketId;
-
-  if (
-    interaction.customId.startsWith(
-      'lcso:ticket-close:',
-    )
-  ) {
-    ticketId =
-      interaction.customId.slice(
-        'lcso:ticket-close:'
-          .length,
-      );
-  } else {
-    ticketId =
-      interaction.customId.slice(
-        'lcso:ticket:close:'
-          .length,
-      );
-  }
-
-  const oid =
-    objectId(ticketId);
-
-  if (!oid) {
-    await interaction.reply({
-      content:
-        '❌ Ticket could not be found.',
-      ephemeral: true,
-    });
-
-    return;
-  }
-
-  const tickets =
-    getDb().collection(
-      'tickets',
+  const ticketId =
+    objectId(
+      interaction.customId.split(
+        ':',
+      )[2],
     );
 
+  if (!ticketId) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
+      content:
+        '❌ Invalid ticket.',
+    });
+  }
+
   const ticket =
-    await tickets.findOne({
-      _id: oid,
+    await col(
+      'tickets',
+    ).findOne({
+      _id:
+        ticketId,
+
       guildId:
-        interaction.guild.id,
+        interaction.guildId,
     });
 
   if (!ticket) {
-    await interaction.reply({
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
+
       content:
         '❌ Ticket could not be found.',
-      ephemeral: true,
     });
-
-    return;
   }
 
-  const member =
-    await interaction.guild.members
-      .fetch(
-        interaction.user.id,
-      )
-      .catch(() => null);
+  const panel =
+    await col(
+      'ticketpanels',
+    ).findOne({
+      _id:
+        ticket.panelId,
+    });
 
   const supportRoleIds =
     Array.isArray(
-      ticket.supportRoleIds,
+      panel?.supportRoleIds,
     )
-      ? ticket.supportRoleIds
+      ? panel.supportRoleIds
       : [];
 
-  const supportMember =
-    member &&
+  const member =
+    interaction.member;
+
+  const allowed =
+    interaction.user.id ===
+      ticket.ownerId ||
+    member.permissions.has(
+      PermissionFlagsBits.Administrator,
+    ) ||
+    member.permissions.has(
+      PermissionFlagsBits.ManageChannels,
+    ) ||
     supportRoleIds.some(
       (roleId) =>
         member.roles.cache.has(
@@ -1813,228 +1739,212 @@ async function closeTicket(
         ),
     );
 
-  const permitted =
-    interaction.user.id ===
-      ticket.ownerId ||
-    supportMember ||
-    member?.permissions.has(
-      PermissionFlagsBits.ManageChannels,
-    ) ||
-    member?.permissions.has(
-      PermissionFlagsBits.Administrator,
-    );
+  if (!allowed) {
+    return interaction.reply({
+      flags:
+        MessageFlags.Ephemeral,
 
-  if (!permitted) {
-    await interaction.reply({
       content:
         '❌ You cannot close this ticket.',
-      ephemeral: true,
     });
-
-    return;
   }
 
-  await tickets.updateOne(
+  await interaction.reply({
+    content:
+      '🔒 Ticket closing...',
+  });
+
+  await col(
+    'tickets',
+  ).updateOne(
     {
-      _id: ticket._id,
+      _id:
+        ticket._id,
     },
+
     {
       $set: {
         status:
           'Closed',
+
         closedBy:
           interaction.user.id,
+
         closedAt:
           new Date(),
+
         updatedAt:
           new Date(),
       },
     },
   );
 
-  await interaction.reply({
-    content:
-      '🔒 Ticket closed. This channel will be deleted shortly.',
-  });
-
-  setTimeout(() => {
-    interaction.channel
-      ?.delete(
-        `Ticket closed by ${interaction.user.tag}`,
-      )
-      .catch(() => {});
-  }, 3000);
+  setTimeout(
+    () => {
+      interaction.channel
+        ?.delete(
+          `Ticket closed by ${interaction.user.tag}`,
+        )
+        .catch(
+          () => null,
+        );
+    },
+    3000,
+  );
 }
 
 /* =========================================================
-   EVENT
+   MAIN EVENT
    ========================================================= */
 
 export default {
-  name: Events.InteractionCreate,
+  name:
+    Events.InteractionCreate,
 
-  async execute(interaction) {
+  async execute(
+    interaction,
+  ) {
     try {
-      /*
-       * APPLICATION DROPDOWN
-       */
       if (
-        interaction.isStringSelectMenu() &&
-        interaction.customId.startsWith(
-          'lcso:application:',
-        )
+        interaction.isStringSelectMenu()
       ) {
-        await startApplication(
-          interaction,
-        );
-
-        return;
-      }
-
-      /*
-       * TICKET DROPDOWN
-       */
-      if (
-        interaction.isStringSelectMenu() &&
-        interaction.customId.startsWith(
-          'lcso:ticket:',
-        )
-      ) {
-        await startTicket(
-          interaction,
-        );
-
-        return;
-      }
-
-      /*
-       * APPLICATION CONTINUE
-       */
-      if (
-        interaction.isButton() &&
-        interaction.customId.startsWith(
-          'lcso:application-next:',
-        )
-      ) {
-        await continueApplication(
-          interaction,
-        );
-
-        return;
-      }
-
-      /*
-       * APPLICATION REVIEW
-       */
-      if (
-        interaction.isButton() &&
-        interaction.customId.startsWith(
-          'lcso:application-review:',
-        )
-      ) {
-        await openApplicationReview(
-          interaction,
-        );
-
-        return;
-      }
-
-      /*
-       * TICKET CLOSE
-       */
-      if (
-        interaction.isButton() &&
-        (
+        if (
           interaction.customId.startsWith(
-            'lcso:ticket-close:',
-          ) ||
-          interaction.customId.startsWith(
-            'lcso:ticket:close:',
+            'lcso:application:',
           )
-        )
-      ) {
-        await closeTicket(
-          interaction,
-        );
+        ) {
+          return beginApplication(
+            interaction,
+          );
+        }
+
+        if (
+          interaction.customId.startsWith(
+            'lcso:ticket:',
+          )
+        ) {
+          return beginTicket(
+            interaction,
+          );
+        }
 
         return;
       }
 
-      /*
-       * APPLICATION QUESTION PAGE
-       */
       if (
-        interaction.isModalSubmit() &&
-        interaction.customId.startsWith(
-          'lcso:application-modal:',
-        )
+        interaction.isButton()
       ) {
-        await submitApplicationPage(
-          interaction,
-        );
+        if (
+          interaction.customId.startsWith(
+            'lcso:applicationcontinue:',
+          )
+        ) {
+          return continueApplication(
+            interaction,
+          );
+        }
+
+        if (
+          interaction.customId.startsWith(
+            'lcso:appreview:',
+          )
+        ) {
+          return reviewApplication(
+            interaction,
+          );
+        }
+
+        if (
+          interaction.customId.startsWith(
+            'lcso:ticketclose:',
+          )
+        ) {
+          return closeTicket(
+            interaction,
+          );
+        }
 
         return;
       }
 
-      /*
-       * APPLICATION REVIEW MODAL
-       */
       if (
-        interaction.isModalSubmit() &&
-        interaction.customId.startsWith(
-          'lcso:application-review-modal:',
-        )
+        interaction.isModalSubmit()
       ) {
-        await submitApplicationReview(
-          interaction,
-        );
+        if (
+          interaction.customId.startsWith(
+            'lcso:applicationform:',
+          )
+        ) {
+          return submitApplicationPage(
+            interaction,
+          );
+        }
 
-        return;
-      }
-
-      /*
-       * TICKET MODAL
-       */
-      if (
-        interaction.isModalSubmit() &&
-        interaction.customId.startsWith(
-          'lcso:ticket-modal:',
-        )
-      ) {
-        await submitTicket(
-          interaction,
-        );
+        if (
+          interaction.customId.startsWith(
+            'lcso:ticketform:',
+          )
+        ) {
+          return submitTicket(
+            interaction,
+          );
+        }
       }
     } catch (error) {
       console.error(
-        'Portal interaction error:',
+        '[PORTAL INTERACTION ERROR]',
         error,
       );
 
-      const content =
-        `❌ ${
+      logger.error(
+        `Portal interaction failed: ${
           error instanceof Error
-            ? error.message
-            : 'Something went wrong.'
-        }`;
+            ? error.stack ||
+              error.message
+            : String(error)
+        }`,
+      );
+
+      const payload = {
+        flags:
+          MessageFlags.Ephemeral,
+
+        content:
+          `❌ ${
+            error instanceof Error
+              ? error.message
+              : 'The action could not be completed.'
+          }`,
+      };
 
       if (
-        interaction.replied ||
         interaction.deferred
       ) {
         await interaction
-          .followUp({
-            content,
-            ephemeral: true,
-          })
-          .catch(() => {});
+          .editReply(
+            payload,
+          )
+          .catch(
+            () => null,
+          );
+      } else if (
+        interaction.replied
+      ) {
+        await interaction
+          .followUp(
+            payload,
+          )
+          .catch(
+            () => null,
+          );
       } else {
         await interaction
-          .reply({
-            content,
-            ephemeral: true,
-          })
-          .catch(() => {});
+          .reply(
+            payload,
+          )
+          .catch(
+            () => null,
+          );
       }
     }
   },
