@@ -4,13 +4,11 @@ import {
 } from 'discord.js';
 
 import mongoose from 'mongoose';
-
-import {
-  logger,
-} from '../utils/logger.js';
+import { logger } from '../utils/logger.js';
 
 let processorStarted = false;
 let processorBusy = false;
+let indexesCleaned = false;
 
 const DEFAULT_RANK_NAMES = [
   'Cadet',
@@ -36,21 +34,29 @@ const STAFF_RANKS = [
 ];
 
 function getDb() {
-  const db =
+  const database =
     mongoose.connection.db;
 
-  if (!db) {
+  if (!database) {
     throw new Error(
       'MongoDB is not connected.',
     );
   }
 
-  return db;
+  return database;
+}
+
+function normalizeName(value) {
+  return String(
+    value ?? '',
+  )
+    .trim()
+    .toLowerCase();
 }
 
 function truncate(
   value,
-  maxLength = 1000,
+  max = 1000,
 ) {
   const text =
     String(
@@ -61,25 +67,15 @@ function truncate(
     return 'N/A';
   }
 
-  if (
-    text.length <=
-    maxLength
-  ) {
-    return text;
-  }
-
-  return `${text.slice(
-    0,
-    Math.max(
-      0,
-      maxLength - 3,
-    ),
-  )}...`;
+  return text.length > max
+    ? `${text.slice(
+        0,
+        max - 3,
+      )}...`
+    : text;
 }
 
-function validImageUrl(
-  value,
-) {
+function validImageUrl(value) {
   if (!value) {
     return false;
   }
@@ -91,56 +87,68 @@ function validImageUrl(
       );
 
     return (
-      url.protocol ===
-        'https:' ||
-      url.protocol ===
-        'http:'
+      url.protocol === 'https:' ||
+      url.protocol === 'http:'
     );
   } catch {
     return false;
   }
 }
 
-function normalizeName(
-  value,
-) {
-  return String(
-    value ?? '',
-  )
-    .trim()
-    .toLowerCase();
-}
-
-function actorLabel(
-  input,
-) {
-  if (
-    input.actorDiscordId
-  ) {
-    return `<@${input.actorDiscordId}>`;
+async function cleanupDeputyIndexes() {
+  if (indexesCleaned) {
+    return;
   }
 
-  return (
-    input.actorName ||
-    'LCSO Command Staff'
-  );
+  const collection =
+    getDb().collection(
+      'deputies',
+    );
+
+  try {
+    const indexes =
+      await collection.indexes();
+
+    if (
+      indexes.some(
+        (index) =>
+          index.name ===
+          'guildId_1_badgeNumber_1',
+      )
+    ) {
+      await collection.dropIndex(
+        'guildId_1_badgeNumber_1',
+      );
+
+      logger.info(
+        'Removed obsolete deputy badgeNumber index',
+      );
+    }
+
+    indexesCleaned =
+      true;
+  } catch (error) {
+    logger.warn(
+      `Deputy index cleanup: ${
+        error instanceof Error
+          ? error.message
+          : String(error)
+      }`,
+    );
+  }
 }
 
 async function getGuild(
   client,
   guildId,
 ) {
-  const cached =
+  return (
     client.guilds.cache.get(
       guildId,
-    );
-
-  if (cached) {
-    return cached;
-  }
-
-  return client.guilds.fetch(
-    guildId,
+    ) ||
+    await client.guilds.fetch(
+      guildId,
+    )
   );
 }
 
@@ -179,7 +187,7 @@ async function getStaffSettings(
       ),
     ]);
 
-  const logChannels =
+  const logs =
     general.logChannels ||
     {};
 
@@ -190,19 +198,15 @@ async function getStaffSettings(
     promotionChannelId:
       staff?.promotionChannelId ||
       general.promotionChannelId ||
-      logChannels.Promotions ||
-      logChannels.promotions ||
-      logChannels.Promotion ||
-      logChannels.promotion ||
+      logs.Promotions ||
+      logs.promotions ||
       null,
 
     infractionChannelId:
       staff?.infractionChannelId ||
       general.infractionChannelId ||
-      logChannels.Infractions ||
-      logChannels.infractions ||
-      logChannels.Infraction ||
-      logChannels.infraction ||
+      logs.Infractions ||
+      logs.infractions ||
       null,
 
     warningRoleId:
@@ -213,6 +217,11 @@ async function getStaffSettings(
     strikeRoleId:
       staff?.strikeRoleId ||
       general.strikeRoleId ||
+      null,
+
+    terminationRoleId:
+      staff?.terminationRoleId ||
+      general.terminationRoleId ||
       null,
 
     promotionBannerUrl:
@@ -233,7 +242,7 @@ async function findTextChannel(
   fallbackNames,
 ) {
   if (configuredId) {
-    const configured =
+    const channel =
       guild.channels.cache.get(
         configuredId,
       ) ||
@@ -246,26 +255,20 @@ async function findTextChannel(
         );
 
     if (
-      configured &&
-      configured.isTextBased() &&
-      typeof configured.send ===
+      channel?.isTextBased() &&
+      typeof channel.send ===
         'function'
     ) {
-      return configured;
+      return channel;
     }
   }
 
-  const wanted =
-    fallbackNames.map(
-      normalizeName,
-    );
-
-  const fallback =
+  const channel =
     guild.channels.cache.find(
-      (channel) => {
+      (entry) => {
         if (
-          !channel.isTextBased() ||
-          typeof channel.send !==
+          !entry.isTextBased() ||
+          typeof entry.send !==
             'function'
         ) {
           return false;
@@ -273,38 +276,36 @@ async function findTextChannel(
 
         const name =
           normalizeName(
-            channel.name,
+            entry.name,
           );
 
-        return wanted.some(
-          (wantedName) =>
-            name ===
-              wantedName ||
+        return fallbackNames.some(
+          (wanted) =>
             name.includes(
-              wantedName,
+              normalizeName(
+                wanted,
+              ),
             ),
         );
       },
     );
 
-  if (!fallback) {
+  if (!channel) {
     throw new Error(
-      `Could not find the configured #${fallbackNames[0]} channel.`,
+      `Could not find #${fallbackNames[0]}.`,
     );
   }
 
-  return fallback;
+  return channel;
 }
 
 async function findRole(
   guild,
-  {
-    roleId = null,
-    roleName = null,
-  } = {},
+  roleId,
+  roleName,
 ) {
   if (roleId) {
-    const byId =
+    const role =
       guild.roles.cache.get(
         roleId,
       ) ||
@@ -316,31 +317,128 @@ async function findRole(
           () => null,
         );
 
-    if (byId) {
-      return byId;
+    if (role) {
+      return role;
     }
   }
 
   if (roleName) {
-    const wanted =
-      normalizeName(
-        roleName,
-      );
-
-    const byName =
+    return (
       guild.roles.cache.find(
         (role) =>
           normalizeName(
             role.name,
-          ) === wanted,
-      );
-
-    if (byName) {
-      return byName;
-    }
+          ) ===
+          normalizeName(
+            roleName,
+          ),
+      ) ||
+      null
+    );
   }
 
   return null;
+}
+
+function configuredRankIds(
+  settings,
+) {
+  return Array.isArray(
+    settings.rankRoleIds,
+  )
+    ? settings.rankRoleIds
+    : [];
+}
+
+function isDepartmentRank(
+  role,
+  settings,
+) {
+  const configured =
+    configuredRankIds(
+      settings,
+    );
+
+  if (
+    configured.length > 0
+  ) {
+    return configured.includes(
+      role.id,
+    );
+  }
+
+  return DEFAULT_RANK_NAMES.some(
+    (rank) =>
+      normalizeName(
+        rank,
+      ) ===
+      normalizeName(
+        role.name,
+      ),
+  );
+}
+
+function getCurrentRankRoles(
+  member,
+  settings,
+) {
+  return [
+    ...member.roles.cache.values(),
+  ]
+    .filter(
+      (role) =>
+        role.id !==
+          member.guild.roles
+            .everyone.id &&
+        isDepartmentRank(
+          role,
+          settings,
+        ),
+    )
+    .sort(
+      (a, b) =>
+        b.position -
+        a.position,
+    );
+}
+
+async function removeOtherRankRoles(
+  member,
+  settings,
+  exceptRoleId = null,
+  reason = 'LCSO staff action',
+) {
+  const roles =
+    getCurrentRankRoles(
+      member,
+      settings,
+    ).filter(
+      (role) =>
+        role.id !==
+        exceptRoleId,
+    );
+
+  for (
+    const role of roles
+  ) {
+    if (!role.editable) {
+      throw new Error(
+        `I cannot remove ${role.name}. Move the LCSO Bot role above it.`,
+      );
+    }
+  }
+
+  if (roles.length) {
+    await member.roles.remove(
+      roles.map(
+        (role) =>
+          role.id,
+      ),
+      reason,
+    );
+  }
+
+  return roles;
 }
 
 async function getDeputy(
@@ -357,153 +455,98 @@ async function getDeputy(
     });
 }
 
-function findCurrentRankRole(
-  member,
-  settings,
-  excludeRoleId = null,
-) {
-  const configured =
-    Array.isArray(
-      settings.rankRoleIds,
-    )
-      ? settings.rankRoleIds
-      : [];
-
-  const roles =
-    [
-      ...member.roles.cache.values(),
-    ]
-      .filter(
-        (role) =>
-          role.id !==
-            member.guild.roles
-              .everyone.id &&
-          role.id !==
-            excludeRoleId,
-      )
-      .sort(
-        (a, b) =>
-          b.position -
-          a.position,
-      );
-
-  for (
-    const role of roles
-  ) {
-    if (
-      configured.includes(
-        role.id,
-      )
-    ) {
-      return role;
-    }
-  }
-
-  for (
-    const role of roles
-  ) {
-    const matches =
-      DEFAULT_RANK_NAMES.some(
-        (rankName) =>
-          normalizeName(
-            rankName,
-          ) ===
-          normalizeName(
-            role.name,
-          ),
-      );
-
-    if (matches) {
-      return role;
-    }
-  }
-
-  return null;
-}
-
-async function ensurePersonnelRecord(
+async function ensurePersonnel(
   guild,
   member,
   rankRole,
+  status = 'Active',
 ) {
+  await cleanupDeputyIndexes();
+
   const now =
     new Date();
 
-  const deputies =
-    getDb().collection(
+  await getDb()
+    .collection(
       'deputies',
-    );
-
-  await deputies.updateOne(
-    {
-      guildId:
-        guild.id,
-
-      discordId:
-        member.id,
-    },
-
-    {
-      $setOnInsert: {
+    )
+    .updateOne(
+      {
         guildId:
           guild.id,
 
         discordId:
           member.id,
-
-        joinDate:
-          member.joinedAt ||
-          now,
-
-        createdAt:
-          now,
-
-        createdBy:
-          'Discord Auto Sync',
-
-        totalActivityMinutes:
-          0,
       },
 
-      $set: {
-        displayName:
-          member.displayName,
+      {
+        $setOnInsert: {
+          guildId:
+            guild.id,
 
-        rankRoleId:
-          rankRole?.id ||
-          null,
+          discordId:
+            member.id,
 
-        rankName:
-          rankRole?.name ||
-          null,
+          joinDate:
+            member.joinedAt ||
+            now,
 
-        rank:
-          rankRole?.name ||
-          null,
+          createdAt:
+            now,
 
-        status:
-          'Active',
+          createdBy:
+            'Discord Auto Sync',
 
-        updatedAt:
-          now,
+          totalActivityMinutes:
+            0,
+        },
+
+        $set: {
+          displayName:
+            member.displayName,
+
+          rankRoleId:
+            rankRole?.id ||
+            null,
+
+          rankName:
+            rankRole?.name ||
+            null,
+
+          rank:
+            rankRole?.name ||
+            null,
+
+          status,
+
+          updatedAt:
+            now,
+        },
+
+        $unset: {
+          badgeNumber:
+            '',
+        },
       },
-    },
 
-    {
-      upsert:
-        true,
-    },
+      {
+        upsert:
+          true,
+      },
+    );
+
+  return getDeputy(
+    guild.id,
+    member.id,
   );
-
-  return deputies.findOne({
-    guildId:
-      guild.id,
-
-    discordId:
-      member.id,
-  });
 }
 
+function actorLabel(input) {
+  return input.actorDiscordId
+    ? `<@${input.actorDiscordId}>`
+    : input.actorName ||
+        'LCSO Command Staff';
+}
 
 /* =========================================================
    PERMISSIONS
@@ -545,7 +588,7 @@ export async function canManageStaffActions(
       guild.id,
     );
 
-  const dashboardAdminRoleIds =
+  const adminRoles =
     Array.isArray(
       settings.dashboardAdminRoleIds,
     )
@@ -553,39 +596,32 @@ export async function canManageStaffActions(
       : [];
 
   if (
-    dashboardAdminRoleIds.some(
-      (roleId) =>
+    adminRoles.some(
+      (id) =>
         member.roles.cache.has(
-          roleId,
+          id,
         ),
     )
   ) {
     return true;
   }
 
-  /*
-   * NO roster/database requirement.
-   *
-   * Discord roles decide whether the
-   * person is Command Staff.
-   */
   return member.roles.cache.some(
     (role) =>
       STAFF_RANKS.some(
-        (rankName) =>
-          normalizeName(
-            rankName,
-          ) ===
+        (rank) =>
           normalizeName(
             role.name,
+          ) ===
+          normalizeName(
+            rank,
           ),
       ),
   );
 }
 
-
 /* =========================================================
-   PROMOTION EMBED
+   PROMOTION POST
    ========================================================= */
 
 async function sendPromotionPost(
@@ -604,18 +640,15 @@ async function sendPromotionPost(
       ],
     );
 
-  const now =
-    new Date();
-
-  const timestamp =
-    Math.floor(
-      now.getTime() /
-        1000,
-    );
-
   const actor =
     actorLabel(
       input,
+    );
+
+  const timestamp =
+    Math.floor(
+      Date.now() /
+        1000,
     );
 
   const embed =
@@ -630,7 +663,7 @@ async function sendPromotionPost(
         [
           '> The **Liberty County Sheriff’s Office Command Staff** is pleased to recognize your hard work and professionalism with a staff promotion.',
           '>',
-          '> Continue setting a strong example for the department and representing LCSO to the highest standard.',
+          '> Continue setting a strong example for the department.',
           '',
           '### ━━━ Promotion Information ━━━',
           '',
@@ -653,19 +686,16 @@ async function sendPromotionPost(
         text:
           'Liberty County Sheriff’s Office • Springfield Roleplay',
       })
-      .setTimestamp(
-        now,
-      );
+      .setTimestamp();
 
-  const guildIcon =
+  const icon =
     guild.iconURL({
-      size:
-        256,
+      size: 256,
     });
 
-  if (guildIcon) {
+  if (icon) {
     embed.setThumbnail(
-      guildIcon,
+      icon,
     );
   }
 
@@ -695,9 +725,8 @@ async function sendPromotionPost(
   return channel;
 }
 
-
 /* =========================================================
-   INFRACTION EMBED
+   INFRACTION POST
    ========================================================= */
 
 async function sendInfractionPost(
@@ -705,6 +734,7 @@ async function sendInfractionPost(
   input,
   type,
   settings,
+  targetRole = null,
 ) {
   const channel =
     await findTextChannel(
@@ -716,52 +746,88 @@ async function sendInfractionPost(
       ],
     );
 
-  const now =
-    new Date();
-
-  const timestamp =
-    Math.floor(
-      now.getTime() /
-        1000,
-    );
-
   const actor =
     actorLabel(
       input,
     );
 
+  const timestamp =
+    Math.floor(
+      Date.now() /
+        1000,
+    );
+
+  let color =
+    0xf0b232;
+
+  if (
+    type === 'Strike'
+  ) {
+    color =
+      0xed4245;
+  }
+
+  if (
+    type === 'Demotion'
+  ) {
+    color =
+      0xe67e22;
+  }
+
+  if (
+    type === 'Termination'
+  ) {
+    color =
+      0x992d22;
+  }
+
+  const information = [
+    `↳ **Staff Member:** <@${input.memberId}>`,
+    `↳ **Handler:** ${actor}`,
+    `↳ **Infraction:** ${type}`,
+  ];
+
+  if (
+    type ===
+      'Demotion' &&
+    targetRole
+  ) {
+    information.push(
+      `↳ **New Rank:** <@&${targetRole.id}>`,
+    );
+  }
+
+  information.push(
+    `↳ **Reason:** ${truncate(
+      input.reason,
+      700,
+    )}`,
+  );
+
+  information.push(
+    `↳ **Notes:** ${truncate(
+      input.notes,
+      700,
+    )}`,
+  );
+
   const embed =
     new EmbedBuilder()
       .setColor(
-        type ===
-          'Strike'
-          ? 0xed4245
-          : 0xf0b232,
+        color,
       )
       .setTitle(
         `🛠️ Liberty County Sheriff’s Office | Staff Infraction - ${type}`,
       )
       .setDescription(
         [
-          '> The **Liberty County Sheriff’s Office Command Staff** has deemed it necessary to issue an infraction upon you for failing to follow department or community regulations.',
+          '> The **Liberty County Sheriff’s Office Command Staff** has issued the following staff action.',
           '>',
-          '> Please review the **Rules & Regulations** to avoid further consequences.',
+          '> Please review department rules and expectations to avoid further consequences.',
           '',
           '### ━━━ Infraction Information ━━━',
           '',
-          `↳ **Staff Member:** <@${input.memberId}>`,
-          `↳ **Handler:** ${actor}`,
-          `↳ **Infraction:** ${type}`,
-          `↳ **Reason:** ${truncate(
-            input.reason,
-            700,
-          )}`,
-          `↳ **Notes:** ${truncate(
-            input.notes,
-            700,
-          )}`,
-          '',
-          'If you believe this infraction was issued incorrectly, please contact Command Staff through the appropriate support channel.',
+          ...information,
           '',
           `> 🕒 **Issued:** <t:${timestamp}:F>`,
         ].join('\n'),
@@ -770,19 +836,16 @@ async function sendInfractionPost(
         text:
           'Liberty County Sheriff’s Office • Springfield Roleplay',
       })
-      .setTimestamp(
-        now,
-      );
+      .setTimestamp();
 
-  const guildIcon =
+  const icon =
     guild.iconURL({
-      size:
-        256,
+      size: 256,
     });
 
-  if (guildIcon) {
+  if (icon) {
     embed.setThumbnail(
-      guildIcon,
+      icon,
     );
   }
 
@@ -812,9 +875,8 @@ async function sendInfractionPost(
   return channel;
 }
 
-
 /* =========================================================
-   PROMOTE MEMBER
+   PROMOTION
    ========================================================= */
 
 export async function promoteMember(
@@ -832,15 +894,17 @@ export async function promoteMember(
     );
   }
 
-  if (!input.memberId) {
+  if (
+    !input.memberId
+  ) {
     throw new Error(
-      'A Discord member is required.',
+      'A member is required.',
     );
   }
 
   if (!input.reason) {
     throw new Error(
-      'A promotion reason is required.',
+      'A reason is required.',
     );
   }
 
@@ -855,10 +919,6 @@ export async function promoteMember(
       guildId,
     );
 
-  /*
-   * Member comes directly from Discord.
-   * No roster requirement anymore.
-   */
   const member =
     guild.members.cache.get(
       input.memberId,
@@ -867,188 +927,49 @@ export async function promoteMember(
       input.memberId,
     );
 
-  const existingDeputy =
-    await getDeputy(
-      guildId,
-      input.memberId,
-    );
-
   const targetRole =
     await findRole(
       guild,
-      {
-        roleId:
-          input.targetRoleId,
-
-        roleName:
-          input.targetRoleName,
-      },
+      input.targetRoleId,
+      input.targetRoleName,
     );
 
-  if (!targetRole) {
+  if (
+    !targetRole ||
+    !isDepartmentRank(
+      targetRole,
+      settings,
+    )
+  ) {
     throw new Error(
-      'The selected Discord rank role could not be found.',
+      'The selected role is not an LCSO rank.',
     );
   }
 
   if (
-    targetRole.id ===
-    guild.roles.everyone.id
+    !targetRole.editable
   ) {
     throw new Error(
-      '@everyone cannot be used as a department rank.',
+      `I cannot assign ${targetRole.name}. Move the bot role above it.`,
     );
   }
 
-  const configuredRankRoleIds =
-    Array.isArray(
-      settings.rankRoleIds,
-    )
-      ? settings.rankRoleIds
-      : [];
-
-  if (
-    configuredRankRoleIds.length >
-      0 &&
-    !configuredRankRoleIds.includes(
-      targetRole.id,
-    )
-  ) {
-    throw new Error(
-      `${targetRole.name} is not configured as an LCSO rank in Server Setup.`,
-    );
-  }
-
-  if (
-    configuredRankRoleIds.length ===
-      0 &&
-    !DEFAULT_RANK_NAMES.some(
-      (rankName) =>
-        normalizeName(
-          rankName,
-        ) ===
-        normalizeName(
-          targetRole.name,
-        ),
-    )
-  ) {
-    throw new Error(
-      `${targetRole.name} is not recognized as an LCSO rank.`,
-    );
-  }
-
-  if (!targetRole.editable) {
-    throw new Error(
-      `I cannot assign the ${targetRole.name} role. Move the LCSO Bot role above it.`,
-    );
-  }
-
-  const currentRankRole =
-    findCurrentRankRole(
+  const oldRanks =
+    getCurrentRankRoles(
       member,
       settings,
-      targetRole.id,
     );
 
-  const previousRoleId =
-    existingDeputy
-      ?.rankRoleId ||
-    currentRankRole?.id ||
+  const previousRole =
+    oldRanks[0] ||
     null;
 
-  const previousRoleName =
-    existingDeputy
-      ?.rankName ||
-    existingDeputy
-      ?.rank ||
-    currentRankRole?.name ||
-    null;
-
-  const removableRoleIds =
-    new Set();
-
-  if (
-    configuredRankRoleIds.length >
-    0
-  ) {
-    for (
-      const roleId of
-      configuredRankRoleIds
-    ) {
-      if (
-        roleId !==
-          targetRole.id &&
-        member.roles.cache.has(
-          roleId,
-        )
-      ) {
-        removableRoleIds.add(
-          roleId,
-        );
-      }
-    }
-  } else {
-    for (
-      const role of
-      member.roles.cache.values()
-    ) {
-      if (
-        role.id ===
-        targetRole.id
-      ) {
-        continue;
-      }
-
-      const isRank =
-        DEFAULT_RANK_NAMES.some(
-          (rankName) =>
-            normalizeName(
-              rankName,
-            ) ===
-            normalizeName(
-              role.name,
-            ),
-        );
-
-      if (isRank) {
-        removableRoleIds.add(
-          role.id,
-        );
-      }
-    }
-  }
-
-  for (
-    const roleId of
-    removableRoleIds
-  ) {
-    const role =
-      guild.roles.cache.get(
-        roleId,
-      );
-
-    if (
-      role &&
-      !role.editable
-    ) {
-      throw new Error(
-        `I cannot remove the old rank ${role.name}. Move the LCSO Bot role above it.`,
-      );
-    }
-  }
-
-  if (
-    removableRoleIds.size >
-    0
-  ) {
-    await member.roles.remove(
-      [
-        ...removableRoleIds,
-      ],
-
-      `LCSO promotion to ${targetRole.name}`,
-    );
-  }
+  await removeOtherRankRoles(
+    member,
+    settings,
+    targetRole.id,
+    `Promotion to ${targetRole.name}`,
+  );
 
   if (
     !member.roles.cache.has(
@@ -1057,30 +978,22 @@ export async function promoteMember(
   ) {
     await member.roles.add(
       targetRole,
-
-      `LCSO promotion: ${truncate(
-        input.reason,
-        400,
-      )}`,
+      `Promotion: ${input.reason}`,
     );
   }
 
-  /*
-   * Automatically create/update DB
-   * record after the Discord role
-   * change.
-   */
-  const savedDeputy =
-    await ensurePersonnelRecord(
+  const deputy =
+    await ensurePersonnel(
       guild,
       member,
       targetRole,
+      'Active',
     );
 
   const now =
     new Date();
 
-  const promotionResult =
+  const result =
     await getDb()
       .collection(
         'promotions',
@@ -1089,7 +1002,7 @@ export async function promoteMember(
         guildId,
 
         deputyId:
-          savedDeputy?._id ||
+          deputy?._id ||
           null,
 
         discordId:
@@ -1098,9 +1011,13 @@ export async function promoteMember(
         memberName:
           member.displayName,
 
-        previousRoleId,
+        previousRoleId:
+          previousRole?.id ||
+          null,
 
-        previousRoleName,
+        previousRoleName:
+          previousRole?.name ||
+          null,
 
         newRoleId:
           targetRole.id,
@@ -1115,12 +1032,8 @@ export async function promoteMember(
           ),
 
         notes:
-          input.notes
-            ? truncate(
-                input.notes,
-                1000,
-              )
-            : null,
+          input.notes ||
+          null,
 
         promotedByDiscordId:
           input.actorDiscordId ||
@@ -1132,7 +1045,7 @@ export async function promoteMember(
 
         source:
           input.source ||
-          'Unknown',
+          'Discord',
 
         createdAt:
           now,
@@ -1141,33 +1054,22 @@ export async function promoteMember(
           now,
       });
 
-  const outputChannel =
+  const channel =
     await sendPromotionPost(
       guild,
-      {
-        ...input,
-
-        memberId:
-          member.id,
-      },
-
+      input,
       targetRole,
       settings,
     );
 
-  logger.info(
-    `LCSO promotion completed: ${member.user.tag} -> ${targetRole.name}`,
-  );
-
   return {
     promotionId:
       String(
-        promotionResult
-          .insertedId,
+        result.insertedId,
       ),
 
     channelId:
-      outputChannel.id,
+      channel.id,
 
     roleId:
       targetRole.id,
@@ -1177,9 +1079,8 @@ export async function promoteMember(
   };
 }
 
-
 /* =========================================================
-   ISSUE INFRACTION
+   INFRACTION
    ========================================================= */
 
 export async function issueInfraction(
@@ -1197,41 +1098,37 @@ export async function issueInfraction(
     );
   }
 
-  if (!input.memberId) {
+  const typeMap = {
+    warning:
+      'Warning',
+
+    strike:
+      'Strike',
+
+    demotion:
+      'Demotion',
+
+    termination:
+      'Termination',
+  };
+
+  const type =
+    typeMap[
+      normalizeName(
+        input.infractionType ||
+        input.type,
+      )
+    ];
+
+  if (!type) {
     throw new Error(
-      'A Discord member is required.',
+      'Infraction must be Warning, Strike, Demotion or Termination.',
     );
   }
 
   if (!input.reason) {
     throw new Error(
-      'An infraction reason is required.',
-    );
-  }
-
-  const rawType =
-    normalizeName(
-      input.infractionType ||
-      input.type,
-    );
-
-  let type;
-
-  if (
-    rawType ===
-    'warning'
-  ) {
-    type =
-      'Warning';
-  } else if (
-    rawType ===
-    'strike'
-  ) {
-    type =
-      'Strike';
-  } else {
-    throw new Error(
-      'Infractions can only be Warning or Strike.',
+      'A reason is required.',
     );
   }
 
@@ -1246,10 +1143,6 @@ export async function issueInfraction(
       guildId,
     );
 
-  /*
-   * Again: Discord member only.
-   * No database roster requirement.
-   */
   const member =
     guild.members.cache.get(
       input.memberId,
@@ -1258,74 +1151,200 @@ export async function issueInfraction(
       input.memberId,
     );
 
-  const configuredRoleId =
-    type ===
-      'Warning'
-      ? settings.warningRoleId
-      : settings.strikeRoleId;
-
-  const role =
-    await findRole(
-      guild,
-      {
-        roleId:
-          configuredRoleId,
-
-        roleName:
-          type,
-      },
-    );
-
-  if (!role) {
-    throw new Error(
-      `The ${type} Discord role could not be found. Configure it on the Infractions dashboard page.`,
-    );
-  }
-
-  if (!role.editable) {
-    throw new Error(
-      `I cannot assign the ${role.name} role. Move the LCSO Bot role above it.`,
-    );
-  }
-
-  if (
-    !member.roles.cache.has(
-      role.id,
-    )
-  ) {
-    await member.roles.add(
-      role,
-
-      `LCSO ${type}: ${truncate(
-        input.reason,
-        400,
-      )}`,
-    );
-  }
-
-  /*
-   * Find their current LCSO rank.
-   * If they aren't already in Mongo,
-   * create them automatically.
-   */
-  const rankRole =
-    findCurrentRankRole(
+  const currentRanks =
+    getCurrentRankRoles(
       member,
       settings,
     );
 
-  let savedDeputy =
+  const currentRank =
+    currentRanks[0] ||
+    null;
+
+  let targetRole =
+    null;
+
+  let actionRole =
+    null;
+
+  if (
+    type === 'Warning' ||
+    type === 'Strike'
+  ) {
+    const configuredId =
+      type === 'Warning'
+        ? settings.warningRoleId
+        : settings.strikeRoleId;
+
+    actionRole =
+      await findRole(
+        guild,
+        configuredId,
+        type,
+      );
+
+    if (!actionRole) {
+      throw new Error(
+        `The ${type} Discord role could not be found.`,
+      );
+    }
+
+    if (
+      !actionRole.editable
+    ) {
+      throw new Error(
+        `I cannot assign ${actionRole.name}. Move the bot role above it.`,
+      );
+    }
+
+    if (
+      !member.roles.cache.has(
+        actionRole.id,
+      )
+    ) {
+      await member.roles.add(
+        actionRole,
+        `LCSO ${type}: ${input.reason}`,
+      );
+    }
+  }
+
+  if (
+    type ===
+    'Demotion'
+  ) {
+    if (
+      !input.targetRoleId &&
+      !input.targetRoleName
+    ) {
+      throw new Error(
+        'Select the new rank when issuing a Demotion.',
+      );
+    }
+
+    targetRole =
+      await findRole(
+        guild,
+        input.targetRoleId,
+        input.targetRoleName,
+      );
+
+    if (
+      !targetRole ||
+      !isDepartmentRank(
+        targetRole,
+        settings,
+      )
+    ) {
+      throw new Error(
+        'The selected demotion rank is not an LCSO rank.',
+      );
+    }
+
+    if (
+      !targetRole.editable
+    ) {
+      throw new Error(
+        `I cannot assign ${targetRole.name}. Move the bot role above it.`,
+      );
+    }
+
+    if (
+      currentRank &&
+      targetRole.position >=
+        currentRank.position
+    ) {
+      throw new Error(
+        `${targetRole.name} is not below the member's current rank.`,
+      );
+    }
+
+    await removeOtherRankRoles(
+      member,
+      settings,
+      targetRole.id,
+      `LCSO demotion to ${targetRole.name}`,
+    );
+
+    if (
+      !member.roles.cache.has(
+        targetRole.id,
+      )
+    ) {
+      await member.roles.add(
+        targetRole,
+        `LCSO Demotion: ${input.reason}`,
+      );
+    }
+
+    await ensurePersonnel(
+      guild,
+      member,
+      targetRole,
+      'Active',
+    );
+  }
+
+  if (
+    type ===
+    'Termination'
+  ) {
+    await removeOtherRankRoles(
+      member,
+      settings,
+      null,
+      `LCSO Termination: ${input.reason}`,
+    );
+
+    const terminationRole =
+      await findRole(
+        guild,
+        settings.terminationRoleId,
+        'Terminated',
+      );
+
+    if (
+      terminationRole &&
+      terminationRole.editable &&
+      !member.roles.cache.has(
+        terminationRole.id,
+      )
+    ) {
+      await member.roles.add(
+        terminationRole,
+        `LCSO Termination: ${input.reason}`,
+      );
+    }
+
+    await ensurePersonnel(
+      guild,
+      member,
+      null,
+      'Terminated',
+    );
+  }
+
+  let deputy =
     await getDeputy(
       guildId,
       member.id,
     );
 
-  if (rankRole) {
-    savedDeputy =
-      await ensurePersonnelRecord(
+  if (
+    !deputy &&
+    currentRank &&
+    type !==
+      'Termination'
+  ) {
+    deputy =
+      await ensurePersonnel(
         guild,
         member,
-        rankRole,
+        type ===
+          'Demotion'
+          ? targetRole
+          : currentRank,
+        'Active',
       );
   }
 
@@ -1341,7 +1360,7 @@ export async function issueInfraction(
         guildId,
 
         deputyId:
-          savedDeputy?._id ||
+          deputy?._id ||
           null,
 
         discordId:
@@ -1359,18 +1378,32 @@ export async function issueInfraction(
           ),
 
         notes:
-          input.notes
-            ? truncate(
-                input.notes,
-                1000,
-              )
-            : null,
+          input.notes ||
+          null,
 
         roleId:
-          role.id,
+          actionRole?.id ||
+          null,
 
         roleName:
-          role.name,
+          actionRole?.name ||
+          null,
+
+        previousRankRoleId:
+          currentRank?.id ||
+          null,
+
+        previousRankName:
+          currentRank?.name ||
+          null,
+
+        targetRankRoleId:
+          targetRole?.id ||
+          null,
+
+        targetRankName:
+          targetRole?.name ||
+          null,
 
         issuedByDiscordId:
           input.actorDiscordId ||
@@ -1382,19 +1415,10 @@ export async function issueInfraction(
 
         source:
           input.source ||
-          'Unknown',
+          'Discord',
 
         active:
           true,
-
-        removedBy:
-          null,
-
-        removedAt:
-          null,
-
-        removalReason:
-          null,
 
         createdAt:
           now,
@@ -1403,23 +1427,14 @@ export async function issueInfraction(
           now,
       });
 
-  const outputChannel =
+  const channel =
     await sendInfractionPost(
       guild,
-      {
-        ...input,
-
-        memberId:
-          member.id,
-      },
-
+      input,
       type,
       settings,
+      targetRole,
     );
-
-  logger.info(
-    `LCSO ${type} issued to ${member.user.tag}`,
-  );
 
   return {
     infractionId:
@@ -1428,21 +1443,24 @@ export async function issueInfraction(
       ),
 
     channelId:
-      outputChannel.id,
-
-    roleId:
-      role.id,
-
-    roleName:
-      role.name,
+      channel.id,
 
     type,
+
+    roleId:
+      actionRole?.id ||
+      targetRole?.id ||
+      null,
+
+    roleName:
+      actionRole?.name ||
+      targetRole?.name ||
+      null,
   };
 }
 
-
 /* =========================================================
-   DASHBOARD QUEUE
+   STAFF ACTION QUEUE
    ========================================================= */
 
 async function processStaffAction(
@@ -1507,50 +1525,47 @@ async function processNextAction(
     true;
 
   try {
-    const collection =
+    const actions =
       getDb().collection(
         'staffactions',
       );
 
     const claimed =
-      await collection
-        .findOneAndUpdate(
-          {
+      await actions.findOneAndUpdate(
+        {
+          status:
+            'Pending',
+        },
+
+        {
+          $set: {
             status:
-              'Pending',
+              'Processing',
+
+            startedAt:
+              new Date(),
+
+            updatedAt:
+              new Date(),
+          },
+        },
+
+        {
+          sort: {
+            createdAt: 1,
           },
 
-          {
-            $set: {
-              status:
-                'Processing',
-
-              startedAt:
-                new Date(),
-
-              updatedAt:
-                new Date(),
-            },
-          },
-
-          {
-            sort: {
-              createdAt:
-                1,
-            },
-
-            returnDocument:
-              'after',
-          },
-        );
+          returnDocument:
+            'after',
+        },
+      );
 
     const action =
       claimed?.value ||
       claimed;
 
     if (
-      !action ||
-      !action._id
+      !action?._id
     ) {
       return;
     }
@@ -1562,7 +1577,7 @@ async function processNextAction(
           action,
         );
 
-      await collection.updateOne(
+      await actions.updateOne(
         {
           _id:
             action._id,
@@ -1573,28 +1588,21 @@ async function processNextAction(
             status:
               'Completed',
 
-            result:
-              result ||
-              null,
-
-            error:
-              null,
+            result,
 
             completedAt:
               new Date(),
 
             updatedAt:
               new Date(),
+
+            error:
+              null,
           },
         },
       );
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : String(error);
-
-      await collection.updateOne(
+      await actions.updateOne(
         {
           _id:
             action._id,
@@ -1606,7 +1614,11 @@ async function processNextAction(
               'Failed',
 
             error:
-              message,
+              error instanceof Error
+                ? error.message
+                : String(
+                    error,
+                  ),
 
             completedAt:
               new Date(),
@@ -1617,9 +1629,7 @@ async function processNextAction(
         },
       );
 
-      logger.error(
-        `Staff action failed: ${message}`,
-      );
+      throw error;
     }
   } catch (error) {
     logger.error(
