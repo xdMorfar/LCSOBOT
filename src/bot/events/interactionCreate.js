@@ -1,6 +1,7 @@
 import {
   ApplicationCommandOptionType,
   Events,
+  MessageFlags,
 } from 'discord.js';
 
 import {
@@ -27,11 +28,6 @@ import {
   promoteMember,
 } from '../../services/staffActionService.js';
 
-
-/* =========================================================
-   OPTION HELPERS
-   ========================================================= */
-
 function flattenOptions(
   options,
   output = [],
@@ -40,8 +36,13 @@ function flattenOptions(
     return output;
   }
 
-  for (const option of options) {
-    output.push(option);
+  for (
+    const option of
+    options
+  ) {
+    output.push(
+      option,
+    );
 
     if (
       Array.isArray(
@@ -58,39 +59,40 @@ function flattenOptions(
   return output;
 }
 
-
 function allOptions(
   interaction,
 ) {
   return flattenOptions(
     interaction.options?.data ||
-      [],
+    [],
   );
 }
-
 
 function findUserId(
   interaction,
 ) {
   const options =
-    allOptions(interaction);
+    allOptions(
+      interaction,
+    );
 
-  const preferredNames = [
+  const names = [
     'member',
-    'deputy',
     'user',
     'target',
     'staff',
+    'deputy',
   ];
 
   for (
     const name of
-    preferredNames
+    names
   ) {
     const option =
       options.find(
         (item) =>
-          item.name === name &&
+          item.name ===
+            name &&
           item.type ===
             ApplicationCommandOptionType.User,
       );
@@ -101,57 +103,35 @@ function findUserId(
         String(
           option.value ||
           '',
-        ) ||
-        null
+        )
       );
     }
   }
 
-  const fallback =
-    options.find(
-      (item) =>
-        item.type ===
-        ApplicationCommandOptionType.User,
-    );
-
-  if (!fallback) {
-    return null;
-  }
-
-  return (
-    fallback.user?.id ||
-    String(
-      fallback.value ||
-      '',
-    ) ||
-    null
-  );
+  return null;
 }
-
 
 function findRole(
   interaction,
-) {
-  const options =
-    allOptions(interaction);
-
-  const preferredNames = [
+  names = [
     'rank',
     'role',
-    'newrank',
-    'new_rank',
-    'new-role',
-    'new_role',
-  ];
+  ],
+) {
+  const options =
+    allOptions(
+      interaction,
+    );
 
   for (
     const name of
-    preferredNames
+    names
   ) {
     const option =
       options.find(
         (item) =>
-          item.name === name &&
+          item.name ===
+            name &&
           item.type ===
             ApplicationCommandOptionType.Role,
       );
@@ -159,9 +139,8 @@ function findRole(
     if (option) {
       return (
         option.role ||
-        interaction.guild?.roles
-          ?.cache
-          ?.get(
+        interaction.guild
+          ?.roles.cache.get(
             String(
               option.value,
             ),
@@ -171,51 +150,34 @@ function findRole(
     }
   }
 
-  const fallback =
-    options.find(
-      (item) =>
-        item.type ===
-        ApplicationCommandOptionType.Role,
-    );
-
-  if (!fallback) {
-    return null;
-  }
-
-  return (
-    fallback.role ||
-    interaction.guild?.roles
-      ?.cache
-      ?.get(
-        String(
-          fallback.value,
-        ),
-      ) ||
-    null
-  );
+  return null;
 }
-
 
 function findString(
   interaction,
   names,
 ) {
   const options =
-    allOptions(interaction);
+    allOptions(
+      interaction,
+    );
 
-  for (const name of names) {
+  for (
+    const name of
+    names
+  ) {
     const option =
       options.find(
         (item) =>
-          item.name === name &&
+          item.name ===
+            name &&
           item.type ===
             ApplicationCommandOptionType.String,
       );
 
     if (
       option?.value !==
-      undefined &&
-      option?.value !== null
+        undefined
     ) {
       return String(
         option.value,
@@ -225,60 +187,18 @@ function findString(
 
   return '';
 }
-
-
-function findOldRankString(
-  interaction,
-) {
-  const options =
-    allOptions(interaction);
-
-  const names = [
-    'rank',
-    'newrank',
-    'new_rank',
-    'new-role',
-    'new_role',
-    'role',
-  ];
-
-  for (const name of names) {
-    const option =
-      options.find(
-        (item) =>
-          item.name === name &&
-          item.type ===
-            ApplicationCommandOptionType.String,
-      );
-
-    if (
-      option?.value !==
-      undefined
-    ) {
-      return String(
-        option.value,
-      ).trim();
-    }
-  }
-
-  return '';
-}
-
 
 function getSubcommand(
   interaction,
 ) {
   try {
-    return (
-      interaction.options.getSubcommand(
-        false,
-      ) || null
+    return interaction.options.getSubcommand(
+      false,
     );
   } catch {
     return null;
   }
 }
-
 
 /* =========================================================
    PROMOTION
@@ -288,7 +208,8 @@ async function handlePromotion(
   interaction,
 ) {
   await interaction.deferReply({
-    ephemeral: true,
+    flags:
+      MessageFlags.Ephemeral,
   });
 
   const allowed =
@@ -298,12 +219,10 @@ async function handlePromotion(
     );
 
   if (!allowed) {
-    await interaction.editReply({
+    return interaction.editReply({
       content:
         '❌ You do not have permission to promote LCSO personnel.',
     });
-
-    return;
   }
 
   const memberId =
@@ -311,20 +230,13 @@ async function handlePromotion(
       interaction,
     );
 
-  const role =
+  const rank =
     findRole(
       interaction,
-    );
-
-  /*
-   * Fallback for the older slash
-   * command version where rank was
-   * stored as a string instead of a
-   * real Discord Role option.
-   */
-  const oldRankName =
-    findOldRankString(
-      interaction,
+      [
+        'rank',
+        'role',
+      ],
     );
 
   const reason =
@@ -344,34 +256,15 @@ async function handlePromotion(
       ],
     );
 
-  if (!memberId) {
-    await interaction.editReply({
-      content:
-        '❌ I could not find the member you selected.',
-    });
-
-    return;
-  }
-
   if (
-    !role &&
-    !oldRankName
+    !memberId ||
+    !rank ||
+    !reason
   ) {
-    await interaction.editReply({
+    return interaction.editReply({
       content:
-        '❌ I could not find the rank you selected.',
+        '❌ Member, rank and reason are required.',
     });
-
-    return;
-  }
-
-  if (!reason) {
-    await interaction.editReply({
-      content:
-        '❌ A promotion reason is required.',
-    });
-
-    return;
   }
 
   try {
@@ -380,18 +273,15 @@ async function handlePromotion(
         interaction.client,
         {
           guildId:
-            interaction.guild.id,
+            interaction.guildId,
 
           memberId,
 
           targetRoleId:
-            role?.id ||
-            null,
+            rank.id,
 
           targetRoleName:
-            role?.name ||
-            oldRankName ||
-            null,
+            rank.name,
 
           reason,
 
@@ -413,61 +303,12 @@ async function handlePromotion(
 
     await interaction.editReply({
       content:
-        `✅ **Promotion confirmed.** The promotion has been posted in <#${result.channelId}>.`,
+        `✅ Promotion completed and posted in <#${result.channelId}>.`,
     });
-
-    await sendLog(
-      interaction.guild,
-      'command',
-      infoEmbed(
-        'Promotion Command Used',
-        `<@${interaction.user.id}> promoted <@${memberId}> to <@&${result.roleId}>.`,
-      ),
-    ).catch(
-      () => null,
-    );
   } catch (error) {
-    /*
-     * IMPORTANT:
-     * This prints the REAL error
-     * directly to bot-hosting.net.
-     */
-    console.error(
-      '\n================================',
-    );
-
     console.error(
       '[LCSO PROMOTION ERROR]',
-    );
-
-    console.error(error);
-
-    console.error(
-      '================================\n',
-    );
-
-    logger.error(
-      'Promotion command failed',
-      {
-        userId:
-          interaction.user.id,
-
-        memberId,
-
-        roleId:
-          role?.id ||
-          null,
-
-        roleName:
-          role?.name ||
-          oldRankName ||
-          null,
-
-        error:
-          error?.stack ||
-          error?.message ||
-          String(error),
-      },
+      error,
     );
 
     await interaction.editReply({
@@ -481,16 +322,16 @@ async function handlePromotion(
   }
 }
 
-
 /* =========================================================
-   INFRACTIONS
+   INFRACTION
    ========================================================= */
 
 async function handleInfraction(
   interaction,
 ) {
   await interaction.deferReply({
-    ephemeral: true,
+    flags:
+      MessageFlags.Ephemeral,
   });
 
   const allowed =
@@ -500,12 +341,10 @@ async function handleInfraction(
     );
 
   if (!allowed) {
-    await interaction.editReply({
+    return interaction.editReply({
       content:
-        '❌ You do not have permission to issue LCSO infractions.',
+        '❌ You do not have permission to issue LCSO staff actions.',
     });
-
-    return;
   }
 
   const memberId =
@@ -519,7 +358,6 @@ async function handleInfraction(
       [
         'type',
         'infraction',
-        'level',
       ],
     );
 
@@ -540,39 +378,55 @@ async function handleInfraction(
       ],
     );
 
-  if (!memberId) {
-    await interaction.editReply({
-      content:
-        '❌ I could not find the member you selected.',
-    });
+  const rank =
+    findRole(
+      interaction,
+      [
+        'rank',
+      ],
+    );
 
-    return;
+  const validTypes = [
+    'warning',
+    'strike',
+    'demotion',
+    'termination',
+  ];
+
+  if (!memberId) {
+    return interaction.editReply({
+      content:
+        '❌ Select a staff member.',
+    });
   }
 
-  const normalizedType =
-    type.toLowerCase();
-
   if (
-    normalizedType !==
-      'warning' &&
-    normalizedType !==
-      'strike'
+    !validTypes.includes(
+      type.toLowerCase(),
+    )
   ) {
-    await interaction.editReply({
+    return interaction.editReply({
       content:
-        '❌ The infraction must be either **Warning** or **Strike**.',
+        '❌ Type must be Warning, Strike, Demotion or Termination.',
     });
-
-    return;
   }
 
   if (!reason) {
-    await interaction.editReply({
+    return interaction.editReply({
       content:
-        '❌ An infraction reason is required.',
+        '❌ A reason is required.',
     });
+  }
 
-    return;
+  if (
+    type.toLowerCase() ===
+      'demotion' &&
+    !rank
+  ) {
+    return interaction.editReply({
+      content:
+        '❌ When selecting **Demotion**, you must also select the new lower rank.',
+    });
   }
 
   try {
@@ -581,15 +435,20 @@ async function handleInfraction(
         interaction.client,
         {
           guildId:
-            interaction.guild.id,
+            interaction.guildId,
 
           memberId,
 
           infractionType:
-            normalizedType ===
-            'strike'
-              ? 'Strike'
-              : 'Warning',
+            type,
+
+          targetRoleId:
+            rank?.id ||
+            null,
+
+          targetRoleName:
+            rank?.name ||
+            null,
 
           reason,
 
@@ -611,53 +470,12 @@ async function handleInfraction(
 
     await interaction.editReply({
       content:
-        `✅ **${result.type} confirmed.** The infraction has been posted in <#${result.channelId}>.`,
+        `✅ **${result.type}** issued and posted in <#${result.channelId}>.`,
     });
-
-    await sendLog(
-      interaction.guild,
-      'command',
-      infoEmbed(
-        'Infraction Command Used',
-        `<@${interaction.user.id}> issued a **${result.type}** to <@${memberId}>.`,
-      ),
-    ).catch(
-      () => null,
-    );
   } catch (error) {
-    /*
-     * REAL console error.
-     */
-    console.error(
-      '\n================================',
-    );
-
     console.error(
       '[LCSO INFRACTION ERROR]',
-    );
-
-    console.error(error);
-
-    console.error(
-      '================================\n',
-    );
-
-    logger.error(
-      'Infraction command failed',
-      {
-        userId:
-          interaction.user.id,
-
-        memberId,
-
-        infractionType:
-          type,
-
-        error:
-          error?.stack ||
-          error?.message ||
-          String(error),
-      },
+      error,
     );
 
     await interaction.editReply({
@@ -671,11 +489,6 @@ async function handleInfraction(
   }
 }
 
-
-/* =========================================================
-   STAFF COMMAND OVERRIDE
-   ========================================================= */
-
 async function handleStaffCommand(
   interaction,
 ) {
@@ -684,15 +497,6 @@ async function handleStaffCommand(
       interaction,
     );
 
-  /*
-   * ONLY replace:
-   *
-   * /promotion promote
-   *
-   * Everything else inside
-   * /promotion still uses the
-   * original command file.
-   */
   if (
     interaction.commandName ===
       'promotion' &&
@@ -706,14 +510,6 @@ async function handleStaffCommand(
     return true;
   }
 
-  /*
-   * ONLY replace:
-   *
-   * /infraction add
-   *
-   * /infraction remove/list/etc.
-   * still use the original system.
-   */
   if (
     interaction.commandName ===
       'infraction' &&
@@ -730,9 +526,8 @@ async function handleStaffCommand(
   return false;
 }
 
-
 /* =========================================================
-   MAIN INTERACTION EVENT
+   MAIN INTERACTION HANDLER
    ========================================================= */
 
 export default {
@@ -751,8 +546,8 @@ export default {
           !interaction.inGuild()
         ) {
           return interaction.reply({
-            ephemeral:
-              true,
+            flags:
+              MessageFlags.Ephemeral,
 
             embeds: [
               errorEmbed(
@@ -763,15 +558,6 @@ export default {
           });
         }
 
-        /*
-         * IMPORTANT:
-         *
-         * Promotion + Infraction are
-         * checked BEFORE context.commands.
-         *
-         * This is the part that fixes
-         * the problem.
-         */
         const handled =
           await handleStaffCommand(
             interaction,
@@ -781,12 +567,6 @@ export default {
           return;
         }
 
-        /*
-         * All other commands continue
-         * through the original bot
-         * command system exactly as
-         * before.
-         */
         const command =
           context.commands.get(
             interaction.commandName,
@@ -808,15 +588,25 @@ export default {
             'Command Used',
             `<@${interaction.user.id}> used \`/${interaction.commandName}\` in <#${interaction.channelId}>.`,
           ),
+        ).catch(
+          () => null,
         );
-      } else if (
+
+        return;
+      }
+
+      if (
         interaction.isButton()
       ) {
         await handleButton(
           interaction,
           context,
         );
-      } else if (
+
+        return;
+      }
+
+      if (
         interaction.isModalSubmit()
       ) {
         await handleModal(
@@ -825,41 +615,9 @@ export default {
         );
       }
     } catch (error) {
-      /*
-       * Your previous version only
-       * passed the error into logger.
-       *
-       * We ALSO print it directly so
-       * bot-hosting.net cannot hide
-       * the useful error.
-       */
-      console.error(
-        '\n================================',
-      );
-
       console.error(
         '[LCSO INTERACTION ERROR]',
-      );
-
-      console.error(
-        'Command:',
-        interaction.commandName,
-      );
-
-      console.error(
-        'Custom ID:',
-        interaction.customId,
-      );
-
-      console.error(
-        'User:',
-        interaction.user?.id,
-      );
-
-      console.error(error);
-
-      console.error(
-        '================================\n',
+        error,
       );
 
       logger.error(
@@ -882,8 +640,8 @@ export default {
       );
 
       const payload = {
-        ephemeral:
-          true,
+        flags:
+          MessageFlags.Ephemeral,
 
         embeds: [
           errorEmbed(
