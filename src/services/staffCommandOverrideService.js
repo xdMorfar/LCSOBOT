@@ -6,44 +6,49 @@ import {
   logger,
 } from '../utils/logger.js';
 
-/*
- * We no longer override client.commands here.
- *
- * interactionCreate.js handles the actual
- * promotion / infraction execution.
- *
- * This function stays because ready.js
- * already imports it.
- */
+
 export function installStaffCommandOverrides() {
   logger.info(
     'Staff slash command handler ready',
   );
 }
 
-function replaceSubcommand(
+
+function upsertSubcommand(
   options,
   subcommandName,
   replacement,
 ) {
-  return options.map(
-    (option) => {
-      if (
+  const current =
+    Array.isArray(options)
+      ? [...options]
+      : [];
+
+  const index =
+    current.findIndex(
+      (option) =>
         option.type ===
           ApplicationCommandOptionType.Subcommand &&
         option.name ===
-          subcommandName
-      ) {
-        return replacement;
-      }
+          subcommandName,
+    );
 
-      return option;
-    },
-  );
+  if (index === -1) {
+    current.push(
+      replacement,
+    );
+
+    return current;
+  }
+
+  current[index] =
+    replacement;
+
+  return current;
 }
 
+
 async function getGuildCommand(
-  client,
   guild,
   commandName,
 ) {
@@ -59,6 +64,7 @@ async function getGuildCommand(
     null
   );
 }
+
 
 export async function patchStaffCommandSchemas(
   client,
@@ -81,13 +87,13 @@ export async function patchStaffCommandSchemas(
       guildId,
     );
 
-  /* =======================================================
-     /promotion promote
-     ======================================================= */
+
+  /* =========================================================
+     /PROMOTION
+     ========================================================= */
 
   const promotionCommand =
     await getGuildCommand(
-      client,
       guild,
       'promotion',
     );
@@ -96,12 +102,13 @@ export async function patchStaffCommandSchemas(
     const data =
       promotionCommand.toJSON();
 
-    const options =
+    let options =
       Array.isArray(
         data.options,
       )
         ? data.options
         : [];
+
 
     const promoteSubcommand = {
       type:
@@ -122,12 +129,15 @@ export async function patchStaffCommandSchemas(
             'member',
 
           description:
-            'The staff member to promote',
+            'Staff member to promote',
 
           required:
             true,
         },
 
+        /*
+         * REAL DISCORD ROLE PICKER
+         */
         {
           type:
             ApplicationCommandOptionType.Role,
@@ -136,7 +146,7 @@ export async function patchStaffCommandSchemas(
             'rank',
 
           description:
-            'The new LCSO rank',
+            'New Discord rank',
 
           required:
             true,
@@ -150,7 +160,7 @@ export async function patchStaffCommandSchemas(
             'reason',
 
           description:
-            'Reason for the promotion',
+            'Reason for promotion',
 
           required:
             true,
@@ -172,30 +182,118 @@ export async function patchStaffCommandSchemas(
       ],
     };
 
+
+    const demoteSubcommand = {
+      type:
+        ApplicationCommandOptionType.Subcommand,
+
+      name:
+        'demote',
+
+      description:
+        'Demote an LCSO staff member',
+
+      options: [
+        {
+          type:
+            ApplicationCommandOptionType.User,
+
+          name:
+            'member',
+
+          description:
+            'Staff member to demote',
+
+          required:
+            true,
+        },
+
+        /*
+         * REAL DISCORD ROLE PICKER.
+         *
+         * No Cadet / Sergeant /
+         * Lieutenant hardcoded list.
+         */
+        {
+          type:
+            ApplicationCommandOptionType.Role,
+
+          name:
+            'rank',
+
+          description:
+            'Discord rank to demote them to',
+
+          required:
+            true,
+        },
+
+        {
+          type:
+            ApplicationCommandOptionType.String,
+
+          name:
+            'reason',
+
+          description:
+            'Reason for demotion',
+
+          required:
+            true,
+        },
+
+        {
+          type:
+            ApplicationCommandOptionType.String,
+
+          name:
+            'notes',
+
+          description:
+            'Optional notes',
+
+          required:
+            false,
+        },
+      ],
+    };
+
+
+    options =
+      upsertSubcommand(
+        options,
+        'promote',
+        promoteSubcommand,
+      );
+
+    options =
+      upsertSubcommand(
+        options,
+        'demote',
+        demoteSubcommand,
+      );
+
+
     await promotionCommand.edit({
       description:
         data.description,
 
-      options:
-        replaceSubcommand(
-          options,
-          'promote',
-          promoteSubcommand,
-        ),
+      options,
     });
 
+
     logger.info(
-      'Updated Discord form for /promotion promote',
+      'Updated Discord forms for /promotion promote and /promotion demote',
     );
   }
 
-  /* =======================================================
-     /infraction add
-     ======================================================= */
+
+  /* =========================================================
+     /INFRACTION ADD
+     ========================================================= */
 
   const infractionCommand =
     await getGuildCommand(
-      client,
       guild,
       'infraction',
     );
@@ -204,12 +302,13 @@ export async function patchStaffCommandSchemas(
     const data =
       infractionCommand.toJSON();
 
-    const options =
+    let options =
       Array.isArray(
         data.options,
       )
         ? data.options
         : [];
+
 
     const addSubcommand = {
       type:
@@ -230,7 +329,7 @@ export async function patchStaffCommandSchemas(
             'member',
 
           description:
-            'The staff member',
+            'Staff member',
 
           required:
             true,
@@ -244,7 +343,7 @@ export async function patchStaffCommandSchemas(
             'type',
 
           description:
-            'Infraction type',
+            'Staff action type',
 
           required:
             true,
@@ -292,12 +391,18 @@ export async function patchStaffCommandSchemas(
             'reason',
 
           description:
-            'Reason for the infraction',
+            'Reason for the staff action',
 
           required:
             true,
         },
 
+        /*
+         * Used for Demotion.
+         *
+         * This is also a REAL
+         * Discord role picker.
+         */
         {
           type:
             ApplicationCommandOptionType.Role,
@@ -306,7 +411,7 @@ export async function patchStaffCommandSchemas(
             'rank',
 
           description:
-            'New rank — only required for Demotion',
+            'New rank if type is Demotion',
 
           required:
             false,
@@ -328,17 +433,22 @@ export async function patchStaffCommandSchemas(
       ],
     };
 
+
+    options =
+      upsertSubcommand(
+        options,
+        'add',
+        addSubcommand,
+      );
+
+
     await infractionCommand.edit({
       description:
         data.description,
 
-      options:
-        replaceSubcommand(
-          options,
-          'add',
-          addSubcommand,
-        ),
+      options,
     });
+
 
     logger.info(
       'Updated Discord form for /infraction add',
